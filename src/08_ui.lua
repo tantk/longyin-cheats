@@ -284,8 +284,10 @@ end
 --- Enable all thread-gated controls (called after successful connect)
 function MT.ui.enableThreadControls()
   for _, entry in ipairs(_threadGatedControls) do
-    if entry.btn then entry.btn.Enabled = true end
-    if entry.edit then entry.edit.Enabled = true end
-    if entry.panel then entry.panel.Color = 0xE0E0E0 end
+    pcall(function()
+      if entry.btn then entry.btn.Enabled = true end
+      if entry.edit then entry.edit.Enabled = true end
+      if entry.panel then entry.panel.Color = 0xE0E0E0 end
+    end)
   end
 end

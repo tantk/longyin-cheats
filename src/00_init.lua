@@ -26,6 +26,7 @@ _evtLoaderTimer = nil
 _staleCheckTimer = nil
 _itemAdderForm = nil
 _mtStatusLbl = nil
+_threadGatedControls = {}
 
 errorOnLookupFailure(false)
 MT = {}

@@ -1683,6 +1683,7 @@ frm.OnClose = function(sender)
   end
   _maTabTimer = nil
   _evtLoaderTimer = nil
+  _threadGatedControls = {}
 end
 
 -- Resize handler: scale PageControl and Martial Arts tab controls with form

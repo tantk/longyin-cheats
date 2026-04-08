@@ -58,13 +58,20 @@ function MT.cheats.sect.memberLimitEnable(newLimit)
   local gmfn = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
   local nm = allocateMemory(64)
 
-  -- Hook 1: GetMaxHeroNum -> return newLimit (float)
+  -- Resolve BOTH methods before patching anything (atomic: both or neither)
   writeString(nm, "GetMaxHeroNum")
   local mi1 = executeCodeEx(0, nil, gmfn, fdClass, nm, 0)
   if not mi1 or mi1 == 0 then deAlloc(nm); error("GetMaxHeroNum未找到 not found") end
   local target1 = readQword(mi1)
-  local orig1 = readBytes(target1, 14, true)
 
+  writeString(nm, "PopulationNotFull")
+  local mi2 = executeCodeEx(0, nil, gmfn, fdClass, nm, 0)
+  if not mi2 or mi2 == 0 then deAlloc(nm); error("PopulationNotFull未找到 not found") end
+  local target2 = readQword(mi2)
+  deAlloc(nm)
+
+  -- Both resolved — now patch
+  local orig1 = readBytes(target1, 14, true)
   local cave = allocateMemory(64, target1) or allocateMemory(64)
   local valueAddr = cave + 16
   writeFloat(valueAddr, newLimit * 1.0)
@@ -75,6 +82,7 @@ function MT.cheats.sect.memberLimitEnable(newLimit)
 
   local jmpRel = cave - (target1 + 5)
   if jmpRel < -0x80000000 or jmpRel > 0x7FFFFFFF then
+    deAlloc(cave)
     error("Cave too far for E9 rel32 — ASLR placement issue")
   end
   if jmpRel < 0 then jmpRel = 0x100000000 + jmpRel end
@@ -83,15 +91,9 @@ function MT.cheats.sect.memberLimitEnable(newLimit)
              math.floor(jmpRel/65536) % 256, math.floor(jmpRel/16777216) % 256)
   writeBytes(target1 + 5, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90)
 
-  -- Hook 2: PopulationNotFull -> always return true
-  writeString(nm, "PopulationNotFull")
-  local mi2 = executeCodeEx(0, nil, gmfn, fdClass, nm, 0)
-  if not mi2 or mi2 == 0 then deAlloc(nm); error("PopulationNotFull未找到 not found") end
-  local target2 = readQword(mi2)
   local orig2 = readBytes(target2, 3, true)
   writeBytes(target2, 0xB0, 0x01, 0xC3)  -- mov al,1; ret
 
-  deAlloc(nm)
   MT.cheats.sect._memberLimitHook = {
     target1 = target1, orig1 = orig1,
     target2 = target2, orig2 = orig2,
