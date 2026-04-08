@@ -1,0 +1,9 @@
+<CheatEntry>
+  <ID>0</ID>
+  <Description>"龙胤立志传 - 先连接游戏再启用修改 [Attach to game first]"</Description>
+  <GroupHeader>1</GroupHeader>
+  <Color>FF0000</Color>
+  <x-ce2fs-child-order>
+    <id id="80"/>
+  </x-ce2fs-child-order>
+</CheatEntry>

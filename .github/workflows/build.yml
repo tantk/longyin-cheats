@@ -1,0 +1,41 @@
+name: Build & Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install luacheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lua5.3 liblua5.3-dev luarocks > /dev/null
+          sudo luarocks install luacheck
+          luacheck --version
+
+      - name: Install ce2fs
+        run: pip install ce2fs
+
+      - name: Lint Lua files
+        run: python scripts/build.py --lint-only
+
+      - name: Build CT
+        run: python scripts/build.py
+
+      - name: Upload CT artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LongYinLiZhiZhuan-CT
+          path: dist/LongYinLiZhiZhuan.CT
+          retention-days: 30

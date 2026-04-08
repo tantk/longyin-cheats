@@ -1,0 +1,59 @@
+#!/bin/bash
+# Pre-commit hook: lint changed .lua and .cea files with selene
+# Install: cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+set -e
+
+LINTER="luacheck"
+if [ -f "C:/tools/luacheck.exe" ]; then
+  LINTER="C:/tools/luacheck.exe"
+fi
+
+# Get staged .lua and .cea files
+LUA_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(lua|cea)$' || true)
+
+if [ -z "$LUA_FILES" ]; then
+  exit 0
+fi
+
+ERRORS=0
+CHECKED=0
+
+for f in $LUA_FILES; do
+  if [ ! -f "$f" ]; then
+    continue
+  fi
+
+  # .cea files need Lua extraction first
+  if [[ "$f" == *.cea ]]; then
+    # Check if it's a Lua-containing .cea (has {$lua} or [ENABLE])
+    if head -c 500 "$f" | grep -qE '\{\$lua\}|\[ENABLE\]'; then
+      RESULT=$(python scripts/lint_cea.py "$f" "$LINTER" 2>&1) || true
+      if echo "$RESULT" | grep -q "error\["; then
+        echo "$RESULT"
+        ERRORS=$((ERRORS + 1))
+      fi
+      CHECKED=$((CHECKED + 1))
+    fi
+  else
+    # Pure .lua files lint directly
+    if ! "$LINTER" "$f" 2>&1 | grep -q "error\["; then
+      : # no errors
+    else
+      "$LINTER" "$f"
+      ERRORS=$((ERRORS + 1))
+    fi
+    CHECKED=$((CHECKED + 1))
+  fi
+done
+
+if [ $ERRORS -gt 0 ]; then
+  echo ""
+  echo "[pre-commit] $ERRORS/$CHECKED file(s) have lint errors. Commit blocked."
+  echo "Fix errors or use --no-verify to bypass (not recommended)."
+  exit 1
+fi
+
+if [ $CHECKED -gt 0 ]; then
+  echo "[pre-commit] $CHECKED file(s) linted OK"
+fi

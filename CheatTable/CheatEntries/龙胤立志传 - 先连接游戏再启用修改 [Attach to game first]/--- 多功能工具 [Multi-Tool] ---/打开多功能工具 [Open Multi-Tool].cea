@@ -1,0 +1,1873 @@
+[ENABLE]
+{$lua}
+if syntaxcheck then return end
+if _itemAdderForm then _itemAdderForm.destroy(); _itemAdderForm = nil end
+
+-- ============================================================
+-- Multi-Tool v8 Form
+-- All logic, helpers, databases, hooks, and item/hero/event
+-- functions are in LuaScript.lua under the MT.* namespace.
+-- This file only creates the GUI and wires callbacks.
+-- ============================================================
+
+local frm = createForm(false)
+frm.Caption = "龙吟利志传 Multi-Tool v8"
+frm.Width = 1100
+frm.Height = 620
+frm.BorderStyle = bsSizeable
+frm.Position = poScreenCenter
+frm.FormStyle = fsStayOnTop
+
+-- ============================================================
+-- CONNECT BUTTON (top bar)
+-- ============================================================
+
+local pnlTop = createPanel(frm)
+pnlTop.Left = 0; pnlTop.Top = 0; pnlTop.Width = 1100; pnlTop.Height = 40
+pnlTop.BevelOuter = 0
+pnlTop.Color = 0xF0F0F0
+pnlTop.Caption = ""
+
+local btnConnect = createButton(pnlTop)
+btnConnect.Left = 8; btnConnect.Top = 6; btnConnect.Width = 180; btnConnect.Height = 28
+btnConnect.Caption = "连接游戏 [Connect]"
+btnConnect.Font.Size = 10
+btnConnect.Font.Style = fsBold
+btnConnect.Visible = true
+
+local lblConnStatus = createLabel(pnlTop)
+lblConnStatus.Left = 200; lblConnStatus.Top = 12
+lblConnStatus.Caption = "未连接 [Not connected]"
+lblConnStatus.Font.Size = 9
+lblConnStatus.Font.Color = 0x0000FF  -- red BGR
+
+btnConnect.OnClick = function(sender)
+  local ok, err = pcall(function()
+    local pid = getOpenedProcessID()
+    if not pid or pid == 0 then error("请先用CE连接游戏 [Attach CE to game first]") end
+    -- Force refresh symbols in case process changed
+    _il2cppCache = nil
+    reinitializeSymbolhandler()
+    local ga = getAddress("GameAssembly.dll")
+    if not ga or ga == 0 then
+      error("找不到GameAssembly.dll [GameAssembly.dll not found — reattach CE]")
+    end
+    lblConnStatus.Caption = "连接中... [Connecting...]"
+    lblConnStatus.Font.Color = 0x008080
+    MT.ui.setStatus("连接中... [Connecting...]", 0x008080)
+    local discoverOk, discoverMsg = MT.hook.discover(false)  -- full mode: resolve all RVAs for items/heroes
+    if not discoverOk then error(tostring(discoverMsg)) end
+    MT.hook.hookInstalled = true
+    MT.ui.enableThreadControls()
+    lblConnStatus.Caption = "已连接 [Connected]"
+    lblConnStatus.Font.Color = 0x008000
+    MT.ui.setStatus(discoverMsg or "Connected! Hook active.", 0x008000)
+  end)
+  if not ok then
+    lblConnStatus.Caption = "连接失败 [Connection failed]"
+    lblConnStatus.Font.Color = 0x0000FF
+    MT.ui.setStatus("ERR: " .. tostring(err), 0x0000FF)
+  end
+end
+
+-- ============================================================
+-- TAB CONTROL (PageControl + 4 tabs)
+-- ============================================================
+
+local pc = createPageControl(frm)
+pc.Left = 4; pc.Top = 42; pc.Width = 1092; pc.Height = 516
+pc.Font.Size = 10
+
+local tabGeneral  = pc.addTab()  -- index 0
+tabGeneral.Caption = "通用 General"
+
+local tabSect     = pc.addTab()  -- index 1
+tabSect.Caption = "门派 Sect"
+
+local tabMartial  = pc.addTab()  -- index 2
+tabMartial.Caption = "武学 Martial Arts"
+
+local tabItems    = pc.addTab()  -- index 3
+tabItems.Caption = "物品 Items"
+
+local tabEvents   = pc.addTab()  -- index 4
+tabEvents.Caption = "事件 Events"
+
+-- ============================================================
+-- GENERAL TAB — 3-column layout with all basic cheats
+-- ============================================================
+
+do
+  local COL1_X = 10
+  local COL2_X = 370
+  local COL3_X = 730
+  local COL_W  = 330
+  local BTN_W  = 320
+  local BTN_H  = 28
+  local ROW_H  = 32
+  local SECTION_GAP = 12
+
+  local function sectionLabel(parent, x, y, text)
+    local lbl = createLabel(parent)
+    lbl.Left = x; lbl.Top = y
+    lbl.Caption = text
+    lbl.Font.Size = 10
+    lbl.Font.Style = fsBold
+    return lbl
+  end
+
+  -- ======== COLUMN 1: Resources + Stats/Talents + Reputation ========
+  local y1 = 8
+  sectionLabel(tabGeneral, COL1_X, y1, "资源 Resources")
+  y1 = y1 + 24
+
+  MT.ui.makeInput(tabGeneral, COL1_X, y1, BTN_W, BTN_H, "设置银两 Money", 80, "9999", MT.cheats.resources.setMoney, false)
+  y1 = y1 + ROW_H
+
+  MT.ui.makeInput(tabGeneral, COL1_X, y1, BTN_W, BTN_H, "门派贡献 SectCurrency", 80, "9999", MT.cheats.resources.setSectCurrency, false)
+  y1 = y1 + ROW_H
+
+  MT.ui.makeInput(tabGeneral, COL1_X, y1, BTN_W, BTN_H, "外门贡献 FactionContrib", 80, "999", MT.cheats.resources.setFactionContrib, false)
+  y1 = y1 + ROW_H
+
+  MT.ui.makeInput(tabGeneral, COL1_X, y1, BTN_W, BTN_H, "设置陨铁 Meteorite", 80, "999", MT.cheats.resources.setMeteorite, false)
+  y1 = y1 + ROW_H + SECTION_GAP
+
+  sectionLabel(tabGeneral, COL1_X, y1, "属性/天赋 Stats/Talents")
+  y1 = y1 + 24
+
+  MT.ui.makeInput(tabGeneral, COL1_X, y1, BTN_W, BTN_H, "属性上限 StatCaps", 80, "99", MT.cheats.stats.setStatCaps, false)
+  y1 = y1 + ROW_H
+
+  MT.ui.makeToggleInput(tabGeneral, COL1_X, y1, BTN_W, BTN_H, "天赋槽 TalentSlot", 80, "99",
+    MT.cheats.stats.talentSlotEnable, MT.cheats.stats.talentSlotDisable, false)
+  y1 = y1 + ROW_H
+
+  MT.ui.makeInput(tabGeneral, COL1_X, y1, BTN_W, BTN_H, "天赋点 TalentPts", 80, "100", MT.cheats.stats.setTalentPoints, false)
+  y1 = y1 + ROW_H + SECTION_GAP
+
+  sectionLabel(tabGeneral, COL1_X, y1, "声望 Reputation")
+  y1 = y1 + 24
+
+  MT.ui.makeInput(tabGeneral, COL1_X, y1, BTN_W, BTN_H, "设置声望 Fame", 80, "1000", MT.cheats.stats.setFame, false)
+  y1 = y1 + ROW_H
+
+  MT.ui.makeOneOff(tabGeneral, COL1_X, y1, BTN_W, BTN_H, "好感全满 MaxFavor", MT.cheats.stats.maxNpcFavor, false)
+  y1 = y1 + ROW_H
+
+  MT.ui.makeOneOff(tabGeneral, COL1_X, y1, BTN_W, BTN_H, "门派好感 Affinity", MT.cheats.stats.maxFactionAffinity, false)
+  y1 = y1 + ROW_H
+
+  -- ======== COLUMN 2: Skills + Battle + Exploration ========
+  local y2 = 8
+  sectionLabel(tabGeneral, COL2_X, y2, "武学 Skills")
+  y2 = y2 + 24
+
+  MT.ui.makeInput(tabGeneral, COL2_X, y2, BTN_W, BTN_H, "武学上限 SkillLimit", 80, "99", MT.cheats.stats.setSkillLimit, false)
+  y2 = y2 + ROW_H
+
+  MT.ui.makeToggleInput(tabGeneral, COL2_X, y2, BTN_W, BTN_H, "武学天才 CombatEXP %", 80, "300",
+    MT.cheats.stats.combatExpEnable, MT.cheats.stats.combatExpDisable, false)
+  y2 = y2 + ROW_H
+
+  MT.ui.makeToggleInput(tabGeneral, COL2_X, y2, BTN_W, BTN_H, "博学多才 LivingEXP %", 80, "300",
+    MT.cheats.stats.livingExpEnable, MT.cheats.stats.livingExpDisable, false)
+  y2 = y2 + ROW_H + SECTION_GAP
+
+  sectionLabel(tabGeneral, COL2_X, y2, "战斗 Battle")
+  y2 = y2 + 24
+
+  MT.ui.makeOneOff(tabGeneral, COL2_X, y2, BTN_W, BTN_H, "恢复生命 RestoreHP", MT.cheats.stats.restoreHP, false)
+  y2 = y2 + ROW_H
+
+  MT.ui.makeOneOff(tabGeneral, COL2_X, y2, BTN_W, BTN_H, "清除伤势 ClearInjury", MT.cheats.stats.clearInjury, false)
+  y2 = y2 + ROW_H
+
+  MT.ui.makeToggleInput(tabGeneral, COL2_X, y2, BTN_W, BTN_H, "战斗加速 BattleSpd (1-999)", 80, "50",
+    MT.cheats.battle.battleSpeedEnable, MT.cheats.battle.battleSpeedDisable, false)
+  y2 = y2 + ROW_H
+
+  MT.ui.makeOneOff(tabGeneral, COL2_X, y2, BTN_W, BTN_H, "敌人1血 Enemy1HP", MT.cheats.battle.enemyOneHP, false)
+  y2 = y2 + ROW_H + SECTION_GAP
+
+  sectionLabel(tabGeneral, COL2_X, y2, "探索 Exploration")
+  y2 = y2 + 24
+
+  MT.ui.makeToggleInput(tabGeneral, COL2_X, y2, BTN_W, BTN_H, "坐骑加速 HorseSpd (1-500)", 80, "100",
+    MT.cheats.explore.horseSpeedEnable, MT.cheats.explore.horseSpeedDisable, false)
+  y2 = y2 + ROW_H
+
+  MT.ui.makeOneOff(tabGeneral, COL2_X, y2, BTN_W, BTN_H, "迷宫全开 DungeonReveal", MT.cheats.explore.dungeonReveal, true)
+  y2 = y2 + ROW_H
+
+  MT.ui.makeOneOff(tabGeneral, COL2_X, y2, BTN_W, BTN_H, "无限耐力 InfiniteStamina", MT.cheats.explore.infiniteStamina, true)
+  y2 = y2 + ROW_H
+
+  -- ======== COLUMN 3: Character Creation ========
+  local y3 = 8
+  sectionLabel(tabGeneral, COL3_X, y3, "角色创建 CharCreate")
+  y3 = y3 + 24
+
+  MT.ui.makeInput(tabGeneral, COL3_X, y3, BTN_W, BTN_H, "属性点 AttrPts", 80, "999", MT.cheats.stats.setAttrPoints, false)
+  y3 = y3 + ROW_H
+
+  MT.ui.makeInput(tabGeneral, COL3_X, y3, BTN_W, BTN_H, "武学点 FightPts", 80, "999", MT.cheats.stats.setFightPoints, false)
+  y3 = y3 + ROW_H
+
+  MT.ui.makeInput(tabGeneral, COL3_X, y3, BTN_W, BTN_H, "生活点 LivingPts", 80, "999", MT.cheats.stats.setLivingPoints, false)
+  y3 = y3 + ROW_H
+
+  MT.ui.makeInput(tabGeneral, COL3_X, y3, BTN_W, BTN_H, "天赋点 TalentPts", 80, "999", MT.cheats.stats.setCreationTalentPoints, false)
+  y3 = y3 + ROW_H
+
+  MT.ui.makeToggleInput(tabGeneral, COL3_X, y3, BTN_W, BTN_H, "天赋槽 TalentSlots", 80, "50",
+    MT.cheats.stats.creationTalentSlotEnable, MT.cheats.stats.creationTalentSlotDisable, false)
+  y3 = y3 + ROW_H
+end
+
+-- ============================================================
+-- SECT TAB -- single-column layout, sect-wide cheats + hero gen
+-- ============================================================
+
+do
+  local sectY = 10
+  local SECT_BTN_W = 400
+  local SECT_BTN_H = 28
+  local SECT_ROW_H = 32
+  local SECT_X = 10
+
+  -- 1. Member Limit 门派人数上限 (toggle -- hooks GetMaxHeroNum + PopulationNotFull)
+  MT.ui.makeToggleInput(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "人数上限 MemberLimit", 50, "300",
+    MT.cheats.sect.memberLimitEnable, MT.cheats.sect.memberLimitDisable, true)
+  sectY = sectY + SECT_ROW_H
+
+  -- 2a. Sect Talent Points 全派天赋点
+  MT.ui.makeInput(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "全派天赋点 SectTalentPts", 50, "99", MT.cheats.sect.setSectTalentPoints, false)
+  sectY = sectY + SECT_ROW_H
+
+  -- 2b. Sect Talent Slots 全派天赋槽
+  MT.ui.makeInput(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "全派天赋槽 SectTalentSlots", 50, "99", MT.cheats.sect.setSectTalentSlots, false)
+  sectY = sectY + SECT_ROW_H
+
+  -- 3. Sect-Wide Prodigy 全门派武学天才+博学多才 (needs thread -- runtime_invoke via cmd=8)
+  MT.ui.makeOneOff(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "全派天才+博学 SectProdigy", MT.cheats.sect.sectProdigy, true)
+  sectY = sectY + SECT_ROW_H
+
+  -- 4. Max Loyalty 全门派忠诚满
+  MT.ui.makeOneOff(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "全派忠诚满 MaxLoyalty", MT.cheats.sect.maxLoyalty, false)
+  sectY = sectY + SECT_ROW_H
+
+  -- 5. Max Skill Slots 全门派武学槽位满
+  MT.ui.makeOneOff(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "全派武学槽满 MaxSkillSlots", MT.cheats.sect.maxSkillSlots, false)
+  sectY = sectY + SECT_ROW_H
+
+  -- 6. Max Resources 门派资源填满
+  MT.ui.makeOneOff(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "资源填满 MaxResources", MT.cheats.sect.maxResources, false)
+  sectY = sectY + SECT_ROW_H
+
+  -- 7. No Resource Cost 门派资源无消耗 (toggle -- AOB patch CostResource methods)
+  MT.ui.makeToggle(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "资源无消耗 NoCost",
+    MT.cheats.sect.noCostEnable, MT.cheats.sect.noCostDisable, false)
+  sectY = sectY + SECT_ROW_H
+
+  -- 8. Research -> 100% 研究进度100%
+  MT.ui.makeOneOff(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "研究100% Research", MT.cheats.sect.research100, true)
+  sectY = sectY + SECT_ROW_H
+
+  -- 9. Build Time -> 1 Day 建筑剩余1天
+  MT.ui.makeOneOff(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "建筑1天 Build1Day", MT.cheats.sect.build1Day, true)
+  sectY = sectY + SECT_ROW_H
+
+  -- 10. Generate Hero 生成角色 -- grid UI: level, sex, age, loyalty + recruit/wanderer buttons
+  sectY = sectY + 8
+  local lblHeroGen = createLabel(tabSect)
+  lblHeroGen.Left = SECT_X; lblHeroGen.Top = sectY
+  lblHeroGen.Caption = "生成角色 Generate Hero"
+  lblHeroGen.Font.Size = 10; lblHeroGen.Font.Style = "[fsBold]"
+  sectY = sectY + 22
+  do
+    local GH_ROW = 26
+    local GH_H = GH_ROW * 4 + 6
+    local pnl = createPanel(tabSect)
+    pnl.Left = SECT_X; pnl.Top = sectY; pnl.Width = SECT_BTN_W; pnl.Height = GH_H
+    pnl.BevelOuter = 1
+    pnl.Color = 0xC0C0C0  -- starts grayed (needs thread)
+    pnl.Caption = ""
+
+    -- Row 1: Level + Sex
+    local lblLv = createLabel(pnl)
+    lblLv.Left = 6; lblLv.Top = 6
+    lblLv.Caption = "等级 Level:"
+    lblLv.Font.Size = 9
+
+    local edtLv = createEdit(pnl)
+    edtLv.Left = 68; edtLv.Top = 3; edtLv.Width = 50; edtLv.Height = 22
+    edtLv.Text = "0"
+    edtLv.Font.Size = 9
+    MT.ui.numericOnly(edtLv)
+    edtLv.Enabled = false
+
+    local lblSex = createLabel(pnl)
+    lblSex.Left = 130; lblSex.Top = 6
+    lblSex.Caption = "性别 Sex:"
+    lblSex.Font.Size = 9
+
+    local cmbSex = createComboBox(pnl)
+    cmbSex.Left = 188; cmbSex.Top = 2; cmbSex.Width = 100; cmbSex.Height = 24
+    cmbSex.Style = csDropDownList
+    cmbSex.Items.add("随机 Random")   -- 0
+    cmbSex.Items.add("男 Male")      -- 1
+    cmbSex.Items.add("女 Female")    -- 2
+    cmbSex.ItemIndex = 0
+    cmbSex.Font.Size = 9
+    cmbSex.Enabled = false
+
+    -- Row 2: Age + Loyalty
+    local r2y = GH_ROW
+    local lblAge = createLabel(pnl)
+    lblAge.Left = 6; lblAge.Top = r2y + 6
+    lblAge.Caption = "年龄 Age:"
+    lblAge.Font.Size = 9
+
+    local edtAge = createEdit(pnl)
+    edtAge.Left = 68; edtAge.Top = r2y + 3; edtAge.Width = 50; edtAge.Height = 22
+    edtAge.Text = "16"
+    edtAge.Font.Size = 9
+    MT.ui.numericOnly(edtAge)
+    edtAge.Enabled = false
+
+    local lblLoy = createLabel(pnl)
+    lblLoy.Left = 130; lblLoy.Top = r2y + 6
+    lblLoy.Caption = "忠诚 Loyalty:"
+    lblLoy.Font.Size = 9
+
+    local edtLoy = createEdit(pnl)
+    edtLoy.Left = 202; edtLoy.Top = r2y + 3; edtLoy.Width = 50; edtLoy.Height = 22
+    edtLoy.Text = "100"
+    edtLoy.Font.Size = 9
+    MT.ui.numericOnly(edtLoy)
+    edtLoy.Enabled = false
+
+    -- Row 3: Stats boost
+    local r3y = GH_ROW * 2
+    local lblStats = createLabel(pnl)
+    lblStats.Left = 6; lblStats.Top = r3y + 6
+    lblStats.Caption = "属性加成 Stats:"
+    lblStats.Font.Size = 9
+
+    local edtBoost = createEdit(pnl)
+    edtBoost.Left = 100; edtBoost.Top = r3y + 3; edtBoost.Width = 50; edtBoost.Height = 22
+    edtBoost.Text = "0"
+    edtBoost.Font.Size = 9
+    MT.ui.numericOnly(edtBoost)
+    edtBoost.Enabled = false
+
+    local lblBoostHint = createLabel(pnl)
+    lblBoostHint.Left = 158; lblBoostHint.Top = r3y + 6
+    lblBoostHint.Caption = "(0=默认 default)"
+    lblBoostHint.Font.Size = 8
+    lblBoostHint.Font.Color = 0x808080
+
+    -- Row 4: Buttons
+    local r3y = GH_ROW * 3
+    local btnGen = createButton(pnl)
+    btnGen.Left = 6; btnGen.Top = r3y + 2; btnGen.Width = 150; btnGen.Height = GH_ROW - 4
+    btnGen.Caption = "招募入派 Recruit"
+    btnGen.Font.Size = 9
+    btnGen.Enabled = false
+
+    btnGen.Width = SECT_BTN_W - 12  -- full width
+
+    -- Register for thread gating
+    table.insert(_threadGatedControls, {panel = pnl, btn = btnGen, edit = edtLv})
+    table.insert(_threadGatedControls, {btn = cmbSex, edit = edtAge})
+    table.insert(_threadGatedControls, {edit = edtLoy})
+    table.insert(_threadGatedControls, {edit = edtBoost})
+
+    -- Helper: boost stat lists to 50+boost
+    local function boostList(heroPtr, baseOff, maxOff, boost)
+      local baseList = readQword(heroPtr + baseOff)
+      local maxList = readQword(heroPtr + maxOff)
+      if not baseList or baseList == 0 then return end
+      if not maxList or maxList == 0 then return end
+      local items = readQword(baseList + 0x10)
+      local size = readInteger(baseList + 0x18)
+      for i = 0, (size or 0) - 1 do
+        writeFloat(items + 0x20 + i * 4, 50 + boost)
+      end
+      items = readQword(maxList + 0x10)
+      size = readInteger(maxList + 0x18)
+      for i = 0, (size or 0) - 1 do
+        local cur = readFloat(items + 0x20 + i * 4) or 0
+        if cur < 50 + boost then writeFloat(items + 0x20 + i * 4, 50 + boost) end
+      end
+    end
+
+    -- Helper: apply age, loyalty, stats boost to a newly generated hero
+    local function applyHeroExtras(heroPtr)
+      if not heroPtr or heroPtr == 0 then return end
+      local age = tonumber(edtAge.Text) or 16
+      local loyalty = tonumber(edtLoy.Text) or 100
+      local boost = tonumber(edtBoost.Text) or 0
+      writeInteger(heroPtr + 0xBC, age)
+      writeFloat(heroPtr + 0x1CC, loyalty * 1.0)
+      if boost > 0 then
+        boostList(heroPtr, 0x128, 0x130, boost)  -- attri base+max
+        boostList(heroPtr, 0x140, 0x148, boost)  -- fight base+max
+        boostList(heroPtr, 0x158, 0x160, boost)  -- living base+max
+      end
+    end
+
+    btnGen.OnClick = function(sender)
+      local cap = "招募入派 Recruit"
+      local ok, msg = pcall(function()
+        MT.game.checkAlive()
+        local lv = tonumber(edtLv.Text) or 20
+        local sexIdx = cmbSex.ItemIndex  -- 0=random, 1=male, 2=female
+        local hero = MT.game.getHero()
+        if not hero then error("角色未找到 Hero not found") end
+        local forceID = readInteger(hero + 0x84)
+        local success, heroPtr = MT.heroes.generate(forceID, lv, sexIdx, 5000)
+        if not success then error(heroPtr) end
+        applyHeroExtras(heroPtr)
+        return "招募成功 Recruited!"
+      end)
+      if ok and msg then
+        MT.ui.flashSuccess(pnl, btnGen, cap, tostring(msg))
+      elseif not ok then
+        MT.ui.flashFail(pnl, btnGen, cap, tostring(msg))
+      else
+        MT.ui.flashSuccess(pnl, btnGen, cap, "招募成功 Recruited!")
+      end
+    end
+
+  end
+  sectY = sectY + SECT_ROW_H * 3
+end
+
+-- ============================================================
+-- MARTIAL ARTS TAB -- full skill database browser (996 skills from live game memory)
+-- ============================================================
+
+do
+  local MA_PAD = 10
+  local _maSkills = {}       -- loaded from GameDataController
+  local _maFilteredMap = {}  -- filtered index → _maSkills index
+  local _maForceNames = {}   -- forceID → name
+
+  -- ---- Filters (top bar) ----
+  local lblCat = createLabel(tabMartial)
+  lblCat.Left = MA_PAD; lblCat.Top = MA_PAD; lblCat.Caption = "分类:"; lblCat.Font.Size = 9
+
+  local cmbCat = createComboBox(tabMartial)
+  cmbCat.Left = MA_PAD + 35; cmbCat.Top = MA_PAD - 3; cmbCat.Width = 100; cmbCat.Height = 24
+  cmbCat.Style = csDropDownList; cmbCat.Font.Size = 9
+  local catOpts = {"全部 All","内功","轻功","绝技","拳掌","剑法","刀法","长兵","奇门","射术"}
+  for _, c in ipairs(catOpts) do cmbCat.Items.add(c) end
+  cmbCat.ItemIndex = 0
+
+  local lblRare = createLabel(tabMartial)
+  lblRare.Left = MA_PAD + 145; lblRare.Top = MA_PAD; lblRare.Caption = "品质:"; lblRare.Font.Size = 9
+
+  local cmbRare = createComboBox(tabMartial)
+  cmbRare.Left = MA_PAD + 178; cmbRare.Top = MA_PAD - 3; cmbRare.Width = 80; cmbRare.Height = 24
+  cmbRare.Style = csDropDownList; cmbRare.Font.Size = 9
+  local rareOpts = {"全部","基础(0)","进阶(1)","上乘(2)","秘传(3)","顶极(4)","绝世(5)"}
+  for _, r in ipairs(rareOpts) do cmbRare.Items.add(r) end
+  cmbRare.ItemIndex = 0
+
+  local lblSect = createLabel(tabMartial)
+  lblSect.Left = MA_PAD + 270; lblSect.Top = MA_PAD; lblSect.Caption = "门派:"; lblSect.Font.Size = 9
+
+  local cmbSect = createComboBox(tabMartial)
+  cmbSect.Left = MA_PAD + 303; cmbSect.Top = MA_PAD - 3; cmbSect.Width = 100; cmbSect.Height = 24
+  cmbSect.Style = csDropDownList; cmbSect.Font.Size = 9
+  cmbSect.Items.add("全部 All")
+  cmbSect.Items.add("通用 Generic")
+  cmbSect.ItemIndex = 0
+
+  -- Dynamic stat column dropdown (prominent position)
+  local _dynStat = nil
+  local lblDynStat = createLabel(tabMartial)
+  lblDynStat.Left = MA_PAD + 415; lblDynStat.Top = MA_PAD; lblDynStat.Caption = "属性列:"; lblDynStat.Font.Size = 9
+  local cmbDynStat = createComboBox(tabMartial)
+  cmbDynStat.Left = MA_PAD + 460; cmbDynStat.Top = MA_PAD - 3; cmbDynStat.Width = 130; cmbDynStat.Height = 24
+  cmbDynStat.Style = csDropDownList; cmbDynStat.Font.Size = 9
+  cmbDynStat.Items.add("(无 None)")
+  cmbDynStat.ItemIndex = 0
+
+  local lblSearch = createLabel(tabMartial)
+  lblSearch.Left = MA_PAD + 605; lblSearch.Top = MA_PAD; lblSearch.Caption = "搜索:"; lblSearch.Font.Size = 9
+  local edtSearch = createEdit(tabMartial)
+  edtSearch.Left = MA_PAD + 638; edtSearch.Top = MA_PAD - 3; edtSearch.Width = 140; edtSearch.Height = 24
+  edtSearch.Font.Size = 9
+
+  -- ---- ListView (single, full-width) ----
+  local lv = createListView(tabMartial)
+  lv.Left = MA_PAD; lv.Top = MA_PAD + 48; lv.Width = 1080; lv.Height = 180
+  lv.ViewStyle = vsReport; lv.RowSelect = true; lv.ReadOnly = true; lv.Font.Size = 9
+  lv.OwnerData = true
+
+  local cols = {
+    {"ID", 40}, {"名称 Name", 130}, {"类型", 50}, {"品质", 45},
+    {"门派", 60}, {"[属性]", 60}, {"内力", 45}, {"伤害", 45},
+    {"释放", 45}, {"作用", 45},
+    {"修炼 Upgrade", 130}, {"修炼+", 35}, {"装备 Equip", 110},
+    {"使用 Use", 110}, {"伤害加成 DmgBonus", 110},
+    {"效果 Effects", 90}, {"攻击架势", 90}, {"防御架势", 90},
+  }
+  local DYNAMIC_COL_IDX = 5  -- 0-based index of [属性] column (between 门派 and 内力)
+  for _, c in ipairs(cols) do
+    local col = lv.Columns.add()
+    col.Caption = c[1]; col.Width = c[2]
+  end
+
+  -- (dropdown already created above in filter bar)
+
+  -- ---- Detail panel (below ListView) ----
+  local detailMemo = createMemo(tabMartial)
+  detailMemo.Left = MA_PAD; detailMemo.Top = MA_PAD + 232; detailMemo.Width = 1080; detailMemo.Height = 260
+  detailMemo.ReadOnly = true; detailMemo.ScrollBars = ssVertical; detailMemo.Font.Size = 9
+  detailMemo.Font.Name = "Consolas"
+  detailMemo.WordWrap = true
+
+  -- ---- Action bar (row 2, below filters) ----
+  local ABY = MA_PAD + 22
+  local lblCount = createLabel(tabMartial)
+  lblCount.Left = MA_PAD + 620; lblCount.Top = ABY + 3; lblCount.Caption = "0 / 0 skills"
+  lblCount.Font.Size = 9; lblCount.Font.Color = 0x808080
+
+  local lblAddRare = createLabel(tabMartial)
+  lblAddRare.Left = MA_PAD; lblAddRare.Top = ABY + 3; lblAddRare.Caption = "品质:"
+  lblAddRare.Font.Size = 9
+  local edtAddRare = createEdit(tabMartial)
+  edtAddRare.Left = MA_PAD + 35; edtAddRare.Top = ABY; edtAddRare.Width = 30; edtAddRare.Height = 22
+  edtAddRare.Text = "5"; edtAddRare.Font.Size = 9
+  MT.ui.numericOnly(edtAddRare)
+
+  local pnlAdd = createPanel(tabMartial)
+  pnlAdd.Left = MA_PAD + 75; pnlAdd.Top = ABY - 1; pnlAdd.Width = 130; pnlAdd.Height = 24
+  pnlAdd.BevelOuter = 1; pnlAdd.Color = 0xC0C0C0; pnlAdd.Caption = ""
+  local btnAdd = createButton(pnlAdd)
+  btnAdd.Left = 1; btnAdd.Top = 1; btnAdd.Width = 128; btnAdd.Height = 21
+  btnAdd.Caption = "添加秘籍 Add Book"; btnAdd.Font.Size = 8; btnAdd.Enabled = false
+  table.insert(_threadGatedControls, {panel = pnlAdd, btn = btnAdd})
+
+  local lblByID = createLabel(tabMartial)
+  lblByID.Left = MA_PAD + 215; lblByID.Top = ABY + 3; lblByID.Caption = "ID:"
+  lblByID.Font.Size = 9
+  local edtByID = createEdit(tabMartial)
+  edtByID.Left = MA_PAD + 235; edtByID.Top = ABY; edtByID.Width = 45; edtByID.Height = 22
+  edtByID.Font.Size = 9
+  MT.ui.numericOnly(edtByID)
+  local pnlByID = createPanel(tabMartial)
+  pnlByID.Left = MA_PAD + 285; pnlByID.Top = ABY - 1; pnlByID.Width = 50; pnlByID.Height = 24
+  pnlByID.BevelOuter = 1; pnlByID.Color = 0xC0C0C0; pnlByID.Caption = ""
+  local btnByID = createButton(pnlByID)
+  btnByID.Left = 1; btnByID.Top = 1; btnByID.Width = 48; btnByID.Height = 21
+  btnByID.Caption = "Add"; btnByID.Font.Size = 8; btnByID.Enabled = false
+  table.insert(_threadGatedControls, {panel = pnlByID, btn = btnByID})
+
+  local lblH1 = createLabel(tabMartial)
+  lblH1.Left = MA_PAD + 350; lblH1.Top = ABY + 3
+  lblH1.Caption = "(品质 0=基础 5=绝世)"; lblH1.Font.Size = 8; lblH1.Font.Color = 0x808080
+
+  -- ---- Precompute display strings per skill (done once on load) ----
+  local postureLabels = {"头","肩","胸","腹","臂","腿"}
+  local function fmtPost(vals)
+    if not vals or #vals == 0 then return "" end
+    local p = {}
+    for j, l in ipairs(postureLabels) do
+      if vals[j] and vals[j] ~= 0 then p[#p+1] = l .. string.format("%.0f", vals[j]) end
+    end
+    return table.concat(p, " ")
+  end
+
+  -- Build display row cache: _maDisplayCache[skIdx] = {col0, col1, ...}
+  local _maDisplayCache = {}
+  local function buildDisplayCache()
+    _maDisplayCache = {}
+    for i, sk in ipairs(_maSkills) do
+      _maDisplayCache[i] = {
+        tostring(sk.id), sk.name, sk.typeName, sk.rareName,
+        sk.forceName or "通用",
+        "",  -- placeholder for dynamic column (filled by OnData)
+        sk.manaCost > 0 and string.format("%.0f", sk.manaCost) or "",
+        sk.baseDmg > 0 and string.format("%.0f", sk.baseDmg) or "",
+        sk.atkRange, sk.dmgRange or "",
+        sk.upgrade,
+        sk.upgradeTotal > 0 and string.format("%.0f", sk.upgradeTotal) or "",
+        sk.equip, sk.use, sk.dmgBonus, sk.effects,
+        fmtPost(sk.atkPosture), fmtPost(sk.defPosture),
+      }
+    end
+  end
+
+  -- Posture name → {field, index} mapping
+  local _postureMap = {
+    ["攻击头"]={1,true}, ["攻击肩"]={2,true}, ["攻击胸"]={3,true},
+    ["攻击腹"]={4,true}, ["攻击臂"]={5,true}, ["攻击腿"]={6,true},
+    ["防御头"]={1,false}, ["防御肩"]={2,false}, ["防御胸"]={3,false},
+    ["防御腹"]={4,false}, ["防御臂"]={5,false}, ["防御腿"]={6,false},
+  }
+
+  -- Helper: get dynamic column value for a skill
+  local function getDynValue(sk)
+    if not _dynStat then return "" end
+    -- Check posture
+    local pm = _postureMap[_dynStat]
+    if pm then
+      local vals = pm[2] and sk.atkPosture or sk.defPosture
+      local v = vals and vals[pm[1]] or 0
+      if v == 0 then return "" end
+      return string.format("%.0f", v)
+    end
+    -- Check damage bonus (伤害: prefix)
+    local dmgName = _dynStat:match("^伤害:(.+)$")
+    if dmgName then
+      local val = sk._dmg and sk._dmg[dmgName] or 0
+      if val == 0 then return "" end
+      if val == math.floor(val) then return string.format("%.0f", val) end
+      return string.format("%.1f", val)
+    end
+    -- Check effects (upgrade + equip + use)
+    if not sk._upg then return "" end
+    local val = (sk._upg[_dynStat] or 0) + (sk._eqp[_dynStat] or 0) + (sk._use[_dynStat] or 0)
+    if val == 0 then return "" end
+    if val == math.floor(val) then return string.format("%.0f", val) end
+    return string.format("%.1f", val)
+  end
+
+  -- OwnerData callback: CE calls this to get text for each visible row
+  lv.OnData = function(sender, item)
+    local idx = item.Index + 1
+    local skIdx = _maFilteredMap[idx]
+    if not skIdx then return end
+    local d = _maDisplayCache[skIdx]
+    if not d then return end
+    -- Fill dynamic column value at position 6 (0-based index 5)
+    d[6] = getDynValue(_maSkills[skIdx])
+    item.Caption = d[1]
+    for c = 2, #d do item.SubItems.add(d[c]) end
+  end
+
+  -- ---- Refresh function (OwnerData: just filter + set count) ----
+  local function refreshSkillList()
+    _maFilteredMap = {}
+    local catIdx = cmbCat.ItemIndex
+    local rareIdx = cmbRare.ItemIndex
+    local sectIdx = cmbSect.ItemIndex
+    local searchText = edtSearch.Text:lower()
+
+    for i, sk in ipairs(_maSkills) do
+      if catIdx > 0 and sk.typeName ~= catOpts[catIdx + 1] then goto skip end
+      if rareIdx > 0 and sk.rareLv ~= (rareIdx - 1) then goto skip end
+      if sectIdx == 1 and sk.forceName ~= "通用" then goto skip end
+      if sectIdx > 1 then
+        if sk.forceName ~= cmbSect.Items[sectIdx] then goto skip end
+      end
+      if #searchText > 0 then
+        local haystack = (sk.name .. sk.desc .. sk.upgrade .. sk.equip .. sk.use .. sk.effects .. sk.dmgBonus):lower()
+        if not haystack:find(searchText, 1, true) then goto skip end
+      end
+      _maFilteredMap[#_maFilteredMap + 1] = i
+      ::skip::
+    end
+    lv.Items.Count = #_maFilteredMap
+    lv.Repaint()
+    lblCount.Caption = string.format("%d / %d skills", #_maFilteredMap, #_maSkills)
+  end
+
+  -- ---- Column sorting ----
+  local _maSortCol = nil
+  local _maSortAsc = true
+  -- Map column index to sort key: field name and whether numeric
+  local sortKeys = {
+    [0] = {f="id", num=true},        -- ID
+    [1] = {f="name", num=false},     -- Name
+    [2] = {f="typeName", num=false}, -- Type
+    [3] = {f="rareLv", num=true},    -- Rarity
+    [4] = {f="forceName", num=false},-- Sect
+    [5] = {f="_dyn", num=true},      -- [属性] dynamic column
+    [6] = {f="manaCost", num=true},  -- Mana
+    [7] = {f="baseDmg", num=true},   -- Damage
+    [8] = {f="atkRange", num=false}, -- 释放范围
+    [9] = {f="dmgRange", num=false}, -- 作用范围
+    [10] = {f="upgrade", num=false}, -- Upgrade text
+    [11] = {f="upgradeTotal", num=true}, -- Upgrade total
+    [12] = {f="equip", num=false},   -- Equip
+    [13] = {f="use", num=false},     -- Use
+    [14] = {f="dmgBonus", num=false},-- DmgBonus
+    [15] = {f="effects", num=false}, -- Effects
+    [16] = {f="atkPosture", num=false}, -- Atk posture
+    [17] = {f="defPosture", num=false}, -- Def posture
+  }
+
+  -- Dynamic stat dropdown handler
+  cmbDynStat.OnChange = function()
+    local idx = cmbDynStat.ItemIndex
+    if idx <= 0 then
+      _dynStat = nil
+      lv.Columns[DYNAMIC_COL_IDX].Caption = "[选择属性]"
+    else
+      _dynStat = cmbDynStat.Items[idx]
+      lv.Columns[DYNAMIC_COL_IDX].Caption = _dynStat
+    end
+    lv.Items.Count = #_maFilteredMap
+    lv.Repaint()
+  end
+
+  lv.OnColumnClick = function(sender, column)
+    local colIdx = column.Index
+    if _maSortCol == colIdx then
+      _maSortAsc = not _maSortAsc
+    else
+      _maSortCol = colIdx
+      _maSortAsc = true
+    end
+    local key = sortKeys[colIdx]
+    if not key then return end
+    table.sort(_maFilteredMap, function(a, b)
+      local sa, sb = _maSkills[a], _maSkills[b]
+      local va, vb
+      if key.f == "_dyn" and _dynStat then
+        -- Dynamic column: posture or effect stat
+        local pm = _postureMap[_dynStat]
+        if pm then
+          local va_vals = pm[2] and sa.atkPosture or sa.defPosture
+          local vb_vals = pm[2] and sb.atkPosture or sb.defPosture
+          va = va_vals and va_vals[pm[1]] or 0
+          vb = vb_vals and vb_vals[pm[1]] or 0
+        else
+          local dmgName = _dynStat:match("^伤害:(.+)$")
+          if dmgName then
+            va = sa._dmg and sa._dmg[dmgName] or 0
+            vb = sb._dmg and sb._dmg[dmgName] or 0
+          else
+            va = (sa._upg and sa._upg[_dynStat] or 0) + (sa._eqp and sa._eqp[_dynStat] or 0) + (sa._use and sa._use[_dynStat] or 0)
+            vb = (sb._upg and sb._upg[_dynStat] or 0) + (sb._eqp and sb._eqp[_dynStat] or 0) + (sb._use and sb._use[_dynStat] or 0)
+          end
+        end
+      elseif key.num then
+        va = tonumber(sa[key.f]) or 0
+        vb = tonumber(sb[key.f]) or 0
+      else
+        va = tostring(sa[key.f] or "")
+        vb = tostring(sb[key.f] or "")
+      end
+      if _maSortAsc then return va < vb else return va > vb end
+    end)
+    lv.Items.Count = #_maFilteredMap  -- force OwnerData refresh
+    lv.Repaint()
+  end
+
+  -- ---- Detail panel update on selection ----
+  local postureLabels = {"头", "肩", "胸", "腹", "臂", "腿"}
+  local function formatPosture(vals)
+    if not vals or #vals == 0 then return "" end
+    local parts = {}
+    for i, lbl in ipairs(postureLabels) do
+      if vals[i] and vals[i] ~= 0 then parts[#parts+1] = lbl .. string.format("%.0f", vals[i]) end
+    end
+    return table.concat(parts, " ")
+  end
+
+  lv.OnSelectItem = function(sender, item, selected)
+    if not selected then return end
+    local selIdx = lv.ItemIndex
+    if selIdx < 0 then return end
+    local skIdx = _maFilteredMap[selIdx + 1]
+    local sk = skIdx and _maSkills[skIdx]
+    if not sk then return end
+
+    local lines = {}
+    lines[#lines+1] = string.format("[%s]  %s · %s · %s", sk.name, sk.rareName, sk.typeName, sk.forceName or "通用")
+    lines[#lines+1] = string.rep("-", 50)
+    lines[#lines+1] = sk.desc
+    lines[#lines+1] = ""
+    if sk.weapon ~= "" then lines[#lines+1] = "武器 Weapon: " .. sk.weapon end
+    if sk.manaCost > 0 then lines[#lines+1] = string.format("内力消耗 Mana: %.0f", sk.manaCost) end
+    if sk.baseDmg > 0 then lines[#lines+1] = string.format("基础伤害 Damage: %.0f", sk.baseDmg) end
+    if sk.atkRange and sk.atkRange ~= "" then lines[#lines+1] = "释放范围: " .. sk.atkRange end
+    if sk.dmgRange and sk.dmgRange ~= "" and sk.dmgRange ~= "0-0" then lines[#lines+1] = "作用范围: " .. sk.dmgRange end
+    if sk.dmgBonus and sk.dmgBonus ~= "" then lines[#lines+1] = "伤害加成: " .. sk.dmgBonus end
+    if sk.use and sk.use ~= "" then lines[#lines+1] = ""; lines[#lines+1] = "使用效果 Use: " .. sk.use end
+    if sk.upgrade ~= "" then lines[#lines+1] = "修炼效果 Upgrade: " .. sk.upgrade end
+    if sk.equip ~= "" then lines[#lines+1] = "装备效果 Equip: " .. sk.equip end
+    if sk.needs and sk.needs ~= "" then lines[#lines+1] = ""; lines[#lines+1] = "修炼需求: " .. sk.needs end
+    local atkP = formatPosture(sk.atkPosture)
+    local defP = formatPosture(sk.defPosture)
+    if atkP ~= "" then lines[#lines+1] = ""; lines[#lines+1] = "攻击架势: " .. atkP end
+    if defP ~= "" then lines[#lines+1] = "防御架势: " .. defP end
+    if sk.effects ~= "" then lines[#lines+1] = ""; lines[#lines+1] = "特殊效果: " .. sk.effects end
+    if sk.maxUse and sk.maxUse > 0 then lines[#lines+1] = "每场限用: " .. sk.maxUse end
+    lines[#lines+1] = ""
+    lines[#lines+1] = ""
+    detailMemo.Lines.Text = table.concat(lines, "\r\n")
+  end
+
+  -- ---- Button handlers ----
+  btnAdd.OnClick = function(sender)
+    local cap = "添加秘籍 Add Book"
+    local ok, msg = pcall(function()
+      if not MT.ui.isConnected() then error("请先连接游戏 [Connect first]") end
+      local selIdx = lv.ItemIndex
+      if selIdx < 0 then error("请先选择武学 [Select a skill] idx=" .. selIdx) end
+      local mapIdx = _maFilteredMap[selIdx + 1]
+      if not mapIdx then error("mapIdx nil, selIdx=" .. selIdx .. " mapLen=" .. #_maFilteredMap) end
+      local sk = _maSkills[mapIdx]
+      if not sk then error("Skill nil at mapIdx=" .. mapIdx) end
+      local rare = math.max(0, math.min(5, tonumber(edtAddRare.Text) or 5))
+      local addOk, addMsg = MT.items.addBook(sk.id, rare)
+      if not addOk then error(addMsg) end
+      return addMsg
+    end)
+    if ok and msg then MT.ui.flashSuccess(pnlAdd, btnAdd, cap, tostring(msg))
+    elseif not ok then MT.ui.flashFail(pnlAdd, btnAdd, cap, tostring(msg)) end
+  end
+
+
+  btnByID.OnClick = function(sender)
+    local cap = "Add"
+    local ok, msg = pcall(function()
+      if not MT.ui.isConnected() then error("Connect first") end
+      local id = tonumber(edtByID.Text)
+      if not id then error("Invalid ID") end
+      local rare = math.max(0, math.min(5, tonumber(edtAddRare.Text) or 5))
+      local aOk, aMsg = MT.items.addBook(id, rare)
+      if not aOk then error(aMsg) end
+      return aMsg
+    end)
+    if ok and msg then MT.ui.flashSuccess(pnlByID, btnByID, cap, tostring(msg))
+    elseif not ok then MT.ui.flashFail(pnlByID, btnByID, cap, tostring(msg)) end
+  end
+
+  -- ---- Wire filter events ----
+  cmbCat.OnChange = function() refreshSkillList() end
+  cmbRare.OnChange = function() refreshSkillList() end
+  cmbSect.OnChange = function() refreshSkillList() end
+  edtSearch.OnChange = function() refreshSkillList() end
+
+  -- ---- Load skill data from embedded .dat file (no live connection needed) ----
+  _maLoaderDone = false
+_maTabTimer = createTimer()
+  _maTabTimer.Interval = 500
+  _maTabTimer.OnTimer = function(t)
+    if _maLoaderDone then t.Enabled = false; return end
+    if not _itemAdderForm then t.Enabled = false; return end
+    local okV, vis = pcall(function() return _itemAdderForm.Visible end)
+    if not okV or not vis then t.Enabled = false; return end
+    local ok, isMA = pcall(function() return pc.ActivePage == tabMartial end)
+    if not ok or not isMA then return end
+    local skills = MT.data.loadSkillsFull()
+    if skills and #skills > 0 then
+      _maSkills = skills
+      buildDisplayCache()
+      -- Populate sect filter from skill data (forceName field is in the .dat)
+      cmbSect.Items.clear()
+      cmbSect.Items.add("全部 All")
+      cmbSect.Items.add("通用")
+      local added = {}
+      for _, sk in ipairs(_maSkills) do
+        local fn = sk.forceName
+        if fn and fn ~= "通用" and fn ~= "" and not added[fn] then
+          cmbSect.Items.add(fn)
+          added[fn] = true
+        end
+      end
+      cmbSect.ItemIndex = 0
+      -- Populate dynamic stat dropdown (effects + posture)
+      if MT.data._allStatNames then
+        local sorted = {}
+        for name in pairs(MT.data._allStatNames) do sorted[#sorted+1] = name end
+        table.sort(sorted)
+        for _, name in ipairs(sorted) do cmbDynStat.Items.add(name) end
+        -- Add posture entries
+        local postureNames = {
+          "攻击头","攻击肩","攻击胸","攻击腹","攻击臂","攻击腿",
+          "防御头","防御肩","防御胸","防御腹","防御臂","防御腿",
+        }
+        for _, name in ipairs(postureNames) do cmbDynStat.Items.add(name) end
+      end
+      _maLoaderDone = true
+      t.Enabled = false
+      refreshSkillList()
+    end
+  end
+  _maTabTimer.Enabled = true
+
+  -- Store references for form resize
+  _maListView = lv
+  _maDetailMemo = detailMemo
+end
+
+-- ============================================================
+-- ITEMS TAB -- medicine, food, horse, material, equipment, treasure
+-- ============================================================
+
+do
+  local IX = 10
+  local IY = 10
+  local ROW = 32
+  local BTN_W = 130
+  local BTN_H = 26
+
+  local function itemSection(parent, x, y, title)
+    local lbl = createLabel(parent)
+    lbl.Left = x; lbl.Top = y; lbl.Caption = title
+    lbl.Font.Size = 10; lbl.Font.Style = fsBold
+    return y + 22
+  end
+
+  local function addItemBtn(parent, x, y, caption, callback)
+    local pnl = createPanel(parent)
+    pnl.Left = x; pnl.Top = y; pnl.Width = BTN_W; pnl.Height = BTN_H
+    pnl.BevelOuter = 1; pnl.Color = 0xC0C0C0; pnl.Caption = ""
+    local btn = createButton(pnl)
+    btn.Left = 1; btn.Top = 1; btn.Width = BTN_W - 2; btn.Height = BTN_H - 2
+    btn.Caption = caption; btn.Font.Size = 8; btn.Enabled = false
+    table.insert(_threadGatedControls, {panel = pnl, btn = btn})
+    btn.OnClick = function()
+      local cap = caption
+      local ok, msg = pcall(callback)
+      if ok and msg then MT.ui.flashSuccess(pnl, btn, cap, tostring(msg))
+      elseif not ok then MT.ui.flashFail(pnl, btn, cap, tostring(msg)) end
+    end
+    return pnl, btn
+  end
+
+  -- ---- Column 1: Medicine + Food + Horse ----
+  local y1 = IY
+  y1 = itemSection(tabItems, IX, y1, "药品 Medicine")
+  local cmbMed = createComboBox(tabItems)
+  cmbMed.Left = IX; cmbMed.Top = y1; cmbMed.Width = 250; cmbMed.Height = 24
+  cmbMed.Style = csDropDownList; cmbMed.Font.Size = 9
+  local medData = MT.data.get("medDB") or {}
+  for _, m in ipairs(medData) do cmbMed.Items.add(m[1] .. " " .. m[2]) end
+  if cmbMed.Items.Count > 0 then cmbMed.ItemIndex = 0 end
+  addItemBtn(tabItems, IX + 260, y1, "添加 Add", function()
+    MT.game.checkAlive()
+    local idx = cmbMed.ItemIndex
+    if idx < 0 then error("请选择药品") end
+    local item = medData[idx + 1]
+    local ok, msg = MT.items.addMedFood(item[1], 0x110)
+    if not ok then error(msg) end
+    return msg
+  end)
+  y1 = y1 + ROW + 4
+
+  y1 = itemSection(tabItems, IX, y1, "食物 Food")
+  local cmbFood = createComboBox(tabItems)
+  cmbFood.Left = IX; cmbFood.Top = y1; cmbFood.Width = 250; cmbFood.Height = 24
+  cmbFood.Style = csDropDownList; cmbFood.Font.Size = 9
+  local foodData = MT.data.get("foodDB") or {}
+  for _, m in ipairs(foodData) do cmbFood.Items.add(m[1] .. " " .. m[2]) end
+  if cmbFood.Items.Count > 0 then cmbFood.ItemIndex = 0 end
+  addItemBtn(tabItems, IX + 260, y1, "添加 Add", function()
+    MT.game.checkAlive()
+    local idx = cmbFood.ItemIndex
+    if idx < 0 then error("请选择食物") end
+    local item = foodData[idx + 1]
+    local ok, msg = MT.items.addMedFood(item[1], 0x118)
+    if not ok then error(msg) end
+    return msg
+  end)
+  y1 = y1 + ROW + 4
+
+  y1 = itemSection(tabItems, IX, y1, "坐骑 Horse")
+  local cmbHorse = createComboBox(tabItems)
+  cmbHorse.Left = IX; cmbHorse.Top = y1; cmbHorse.Width = 250; cmbHorse.Height = 24
+  cmbHorse.Style = csDropDownList; cmbHorse.Font.Size = 9
+  local horseData = MT.data.get("horseDB") or {}
+  for _, m in ipairs(horseData) do cmbHorse.Items.add(m[1] .. " " .. m[2]) end
+  if cmbHorse.Items.Count > 0 then cmbHorse.ItemIndex = 0 end
+  addItemBtn(tabItems, IX + 260, y1, "添加 Add", function()
+    MT.game.checkAlive()
+    local idx = cmbHorse.ItemIndex
+    if idx < 0 then error("请选择坐骑") end
+    local item = horseData[idx + 1]
+    local ok, msg = MT.items.addHorse(item[1])
+    if not ok then error(msg) end
+    return msg
+  end)
+  y1 = y1 + ROW + 4
+
+  y1 = itemSection(tabItems, IX, y1, "材料 Material")
+  local cmbMat = createComboBox(tabItems)
+  cmbMat.Left = IX; cmbMat.Top = y1; cmbMat.Width = 150; cmbMat.Height = 24
+  cmbMat.Style = csDropDownList; cmbMat.Font.Size = 9
+  local matData = MT.data.get("matDB") or {}
+  for _, m in ipairs(matData) do cmbMat.Items.add(m[1] .. " " .. m[2]) end
+  if cmbMat.Items.Count > 0 then cmbMat.ItemIndex = 0 end
+  local lblMatLv = createLabel(tabItems)
+  lblMatLv.Left = IX + 160; lblMatLv.Top = y1 + 4; lblMatLv.Caption = "等级:"; lblMatLv.Font.Size = 9
+  local edtMatLv = createEdit(tabItems)
+  edtMatLv.Left = IX + 195; edtMatLv.Top = y1; edtMatLv.Width = 35; edtMatLv.Height = 22
+  edtMatLv.Text = "5"; edtMatLv.Font.Size = 9; MT.ui.numericOnly(edtMatLv)
+  local lblMatRare = createLabel(tabItems)
+  lblMatRare.Left = IX + 240; lblMatRare.Top = y1 + 4; lblMatRare.Caption = "品质:"; lblMatRare.Font.Size = 9
+  local edtMatRare = createEdit(tabItems)
+  edtMatRare.Left = IX + 275; edtMatRare.Top = y1; edtMatRare.Width = 35; edtMatRare.Height = 22
+  edtMatRare.Text = "5"; edtMatRare.Font.Size = 9; MT.ui.numericOnly(edtMatRare)
+  addItemBtn(tabItems, IX + 320, y1, "添加 Add", function()
+    MT.game.checkAlive()
+    local idx = cmbMat.ItemIndex
+    if idx < 0 then error("请选择材料") end
+    local item = matData[idx + 1]
+    local lv = tonumber(edtMatLv.Text) or 5
+    local rare = tonumber(edtMatRare.Text) or 5
+    local ok, msg = MT.items.addMaterial(item[1], lv, rare)
+    if not ok then error(msg) end
+    return msg
+  end)
+  y1 = y1 + ROW + 8
+
+  -- ---- Column 2: Equipment + Treasure ----
+  local COL2 = 500
+  local y2 = IY
+  y2 = itemSection(tabItems, COL2, y2, "装备 Equipment")
+
+  -- Row 1: Category dropdown
+  local cmbEquipType = createComboBox(tabItems)
+  cmbEquipType.Left = COL2; cmbEquipType.Top = y2; cmbEquipType.Width = 150; cmbEquipType.Height = 24
+  cmbEquipType.Style = csDropDownList; cmbEquipType.Font.Size = 9
+  local equipTypes = {"武器 Weapon","铠甲 Armor","头盔 Helmet","鞋 Shoes","饰品 Accessory","马甲 HorseArmor"}
+  for _, t in ipairs(equipTypes) do cmbEquipType.Items.add(t) end
+  cmbEquipType.ItemIndex = 0
+
+  -- Row 1: Sub-type dropdown (populated on category change)
+  local cmbEquipSub = createComboBox(tabItems)
+  cmbEquipSub.Left = COL2 + 160; cmbEquipSub.Top = y2; cmbEquipSub.Width = 200; cmbEquipSub.Height = 24
+  cmbEquipSub.Style = csDropDownList; cmbEquipSub.Font.Size = 9
+  y2 = y2 + ROW
+
+  -- Populate sub-type dropdown from GDC database or staticItems
+  local function populateEquipSub()
+    cmbEquipSub.Items.clear()
+    local typeIdx = cmbEquipType.ItemIndex
+    local db = MT.hook.equipDBs[typeIdx + 1]
+    if not db then return end
+    if db.staticItems then
+      for _, name in ipairs(db.staticItems) do cmbEquipSub.Items.add(name) end
+    elseif db.off then
+      local ok, err = pcall(function()
+        local c = MT.il2cpp.init()
+        if not c:ensure("gdc", "GameDataController", 0x20) then return end
+        local gdcInst = readQword(c.gdc.static + c.gdc.instOff)
+        if not gdcInst or gdcInst == 0 then return end
+        local dbList = readQword(gdcInst + db.off)
+        if not dbList or dbList == 0 then return end
+        local dbItems = readQword(dbList + 0x10)
+        local dbCount = readInteger(dbList + 0x18)
+        if not dbItems or dbCount <= 0 then return end
+        for i = 0, dbCount - 1 do
+          local item = readQword(dbItems + 0x20 + i * 8)
+          if item and item ~= 0 then
+            local np = readQword(item + 0x20)
+            local name = ""
+            if np and np ~= 0 then
+              local nl = readInteger(np + 0x10)
+              if nl and nl > 0 then name = readString(np + 0x14, nl * 2, true) or "" end
+            end
+            cmbEquipSub.Items.add(string.format("%d %s", i, name))
+          end
+        end
+      end)
+      if not ok then cmbEquipSub.Items.add("(需连接游戏 Connect first)") end
+    end
+    if cmbEquipSub.Items.Count > 0 then cmbEquipSub.ItemIndex = 0 end
+  end
+  cmbEquipType.OnChange = function() populateEquipSub() end
+  populateEquipSub()
+
+  -- Row 2: Level + Rarity + Generate
+  local lblEqLv = createLabel(tabItems)
+  lblEqLv.Left = COL2; lblEqLv.Top = y2 + 4; lblEqLv.Caption = "等级:"; lblEqLv.Font.Size = 9
+  local edtEqLv = createEdit(tabItems)
+  edtEqLv.Left = COL2 + 35; edtEqLv.Top = y2; edtEqLv.Width = 35; edtEqLv.Height = 22
+  edtEqLv.Text = "5"; edtEqLv.Font.Size = 9; MT.ui.numericOnly(edtEqLv)
+  local lblEqRare = createLabel(tabItems)
+  lblEqRare.Left = COL2 + 80; lblEqRare.Top = y2 + 4; lblEqRare.Caption = "品质:"; lblEqRare.Font.Size = 9
+  local edtEqRare = createEdit(tabItems)
+  edtEqRare.Left = COL2 + 115; edtEqRare.Top = y2; edtEqRare.Width = 35; edtEqRare.Height = 22
+  edtEqRare.Text = "5"; edtEqRare.Font.Size = 9; MT.ui.numericOnly(edtEqRare)
+  addItemBtn(tabItems, COL2 + 160, y2, "生成 Generate", function()
+    MT.game.checkAlive()
+    local typeIdx = cmbEquipType.ItemIndex
+    local subIdx = cmbEquipSub.ItemIndex
+    if subIdx < 0 then error("请选择子类型 Select sub-type") end
+    local lv = tonumber(edtEqLv.Text) or 10
+    local rare = tonumber(edtEqRare.Text) or 5
+    local equipDBs = MT.hook.equipDBs
+    local db = equipDBs[typeIdx + 1]
+    if not db then error("装备类型无效") end
+    if not db.genRVA then error(db.name .. " RVA not resolved") end
+    local ok, msg = MT.items.addEquipGenerated(db.genRVA, subIdx, lv, rare)
+    if not ok then error(msg) end
+    return msg
+  end)
+  y2 = y2 + ROW + 8
+
+  y2 = itemSection(tabItems, COL2, y2, "珍品 Treasure")
+  local cmbTreasure = createComboBox(tabItems)
+  cmbTreasure.Left = COL2; cmbTreasure.Top = y2; cmbTreasure.Width = 150; cmbTreasure.Height = 24
+  cmbTreasure.Style = csDropDownList; cmbTreasure.Font.Size = 9
+  for _, t in ipairs(MT.data.treasureTypes) do cmbTreasure.Items.add(t) end
+  cmbTreasure.ItemIndex = 0
+  local lblTrLv = createLabel(tabItems)
+  lblTrLv.Left = COL2 + 160; lblTrLv.Top = y2 + 4; lblTrLv.Caption = "等级:"; lblTrLv.Font.Size = 9
+  local edtTrLv = createEdit(tabItems)
+  edtTrLv.Left = COL2 + 195; edtTrLv.Top = y2; edtTrLv.Width = 35; edtTrLv.Height = 22
+  edtTrLv.Text = "5"; edtTrLv.Font.Size = 9; MT.ui.numericOnly(edtTrLv)
+  local lblTrRare = createLabel(tabItems)
+  lblTrRare.Left = COL2 + 240; lblTrRare.Top = y2 + 4; lblTrRare.Caption = "品质:"; lblTrRare.Font.Size = 9
+  local edtTrRare = createEdit(tabItems)
+  edtTrRare.Left = COL2 + 275; edtTrRare.Top = y2; edtTrRare.Width = 35; edtTrRare.Height = 22
+  edtTrRare.Text = "5"; edtTrRare.Font.Size = 9; MT.ui.numericOnly(edtTrRare)
+  addItemBtn(tabItems, COL2 + 320, y2, "生成 Generate", function()
+    MT.game.checkAlive()
+    local typeIdx = cmbTreasure.ItemIndex
+    local lv = tonumber(edtTrLv.Text) or 5
+    local rare = tonumber(edtTrRare.Text) or 5
+    if not MT.hook.TREASURE_GEN_RVA then error("GenerateTreasure RVA not resolved") end
+    local ok, msg = MT.items.addTreasure(typeIdx, lv, rare)
+    if not ok then error(msg) end
+    return msg
+  end)
+  y2 = y2 + ROW + 8
+
+  -- Max Rarity 物品品质全满
+  y1 = itemSection(tabItems, IX, y1, "其他 Other")
+  addItemBtn(tabItems, IX, y1, "品质全满 MaxRarity", function()
+    MT.game.checkAlive()
+    local ok, msg = pcall(MT.cheats.resources.maxRarity)
+    if not ok then error(msg) end
+    return msg
+  end)
+  y1 = y1 + ROW + 8
+
+  -- Hint
+  local lblItemHint = createLabel(tabItems)
+  lblItemHint.Left = IX; lblItemHint.Top = y1 + 4
+  lblItemHint.Caption = "品质 0=基础 5=绝世 | 等级=游戏难度系数"
+  lblItemHint.Font.Size = 8; lblItemHint.Font.Color = 0x808080
+end
+
+-- ============================================================
+-- EVENTS TAB -- category filter + searchable event list + spawn
+-- ============================================================
+
+do
+  -- Globals for event data (populated by background loader timer)
+  _mtEvents = {}         -- array of {idx, addr, name, type, categories, search}
+  _evtFilteredMap = {}   -- maps ListView row index -> _mtEvents index
+  _evtListView = nil
+  _evtRefreshList = nil
+  _mtEdKlass = nil       -- EventData klass (for template verification)
+
+  local EVT_PAD = 10
+
+  -- Category dropdown
+  local lblCat = createLabel(tabEvents)
+  lblCat.Left = EVT_PAD; lblCat.Top = EVT_PAD
+  lblCat.Caption = "分类 Category:"
+  lblCat.Font.Size = 9
+
+  local cmbCat = createComboBox(tabEvents)
+  cmbCat.Left = EVT_PAD + 90; cmbCat.Top = EVT_PAD - 2; cmbCat.Width = 160; cmbCat.Height = 24
+  cmbCat.Style = csDropDownList
+  cmbCat.Font.Size = 9
+  cmbCat.Items.add("全部 All")
+  cmbCat.Items.add("门派 Sect")
+  cmbCat.Items.add("城镇 City")
+  cmbCat.Items.add("村庄 Village")
+  cmbCat.Items.add("客栈 Inn")
+  cmbCat.Items.add("探索 Explore")
+  cmbCat.Items.add("节日 Festival")
+  cmbCat.Items.add("大赛 Tournament")
+  cmbCat.Items.add("世界 World")
+  cmbCat.ItemIndex = 0
+
+  -- Search box
+  local lblSearch = createLabel(tabEvents)
+  lblSearch.Left = EVT_PAD + 270; lblSearch.Top = EVT_PAD
+  lblSearch.Caption = "搜索 Search:"
+  lblSearch.Font.Size = 9
+
+  local edtSearch = createEdit(tabEvents)
+  edtSearch.Left = EVT_PAD + 350; edtSearch.Top = EVT_PAD - 2; edtSearch.Width = 180; edtSearch.Height = 22
+  edtSearch.Text = ""
+  edtSearch.Font.Size = 9
+
+  -- Difficulty input
+  local lblDiff = createLabel(tabEvents)
+  lblDiff.Left = EVT_PAD + 550; lblDiff.Top = EVT_PAD
+  lblDiff.Caption = "难度 Difficulty:"
+  lblDiff.Font.Size = 9
+
+  local edtDiff = createEdit(tabEvents)
+  edtDiff.Left = EVT_PAD + 650; edtDiff.Top = EVT_PAD - 2; edtDiff.Width = 60; edtDiff.Height = 22
+  edtDiff.Text = "-1"
+  edtDiff.Font.Size = 9
+  MT.ui.numericOnly(edtDiff)
+
+  -- ListView (leave 200px right margin for spawn controls)
+  local RIGHT_W = 200
+  local LV_W = 860
+  local RX = EVT_PAD + LV_W + 10  -- right panel X
+
+  local lv = createListView(tabEvents)
+  lv.Left = EVT_PAD; lv.Top = EVT_PAD + 30; lv.Width = LV_W; lv.Height = 400
+  lv.ViewStyle = vsReport
+  lv.RowSelect = true
+  lv.ReadOnly = true
+  lv.Font.Size = 9
+
+  local col0 = lv.Columns.add()
+  col0.Caption = "#"; col0.Width = 40
+  local col1 = lv.Columns.add()
+  col1.Caption = "名称 Name"; col1.Width = 340
+  local col2 = lv.Columns.add()
+  col2.Caption = "分类 Category"; col2.Width = 280
+  local col3 = lv.Columns.add()
+  col3.Caption = "类型 Type"; col3.Width = 120
+
+  _evtListView = lv
+
+  -- Count label
+  local lblCount = createLabel(tabEvents)
+  lblCount.Left = RX; lblCount.Top = EVT_PAD + 30
+  lblCount.Caption = "0 events"
+  lblCount.Font.Size = 9
+  lblCount.Font.Color = 0x808080
+
+  -- Refresh function -- filters _mtEvents by category + search, populates ListView
+  local function refreshEventList()
+    lv.Items.BeginUpdate()
+    lv.Items.clear()
+    _evtFilteredMap = {}
+    local catIdx = cmbCat.ItemIndex
+    local catNames = {"全部 All","门派 Sect","城镇 City","村庄 Village","客栈 Inn","探索 Explore","节日 Festival","大赛 Tournament","世界 World"}
+    local filterCat = catNames[catIdx + 1]  -- Lua 1-based
+    local searchText = string.lower(edtSearch.Text or "")
+    local shown = 0
+
+    for i, ev in ipairs(_mtEvents) do
+      local passCategory = (filterCat == "全部 All")
+      if not passCategory then
+        passCategory = ev.categories[filterCat] or false
+      end
+      local passSearch = true
+      if searchText ~= "" then
+        passSearch = string.find(string.lower(ev.name or ""), searchText, 1, true) ~= nil
+      end
+      if passCategory and passSearch then
+        shown = shown + 1
+        _evtFilteredMap[shown] = i
+        local item = lv.Items.add()
+        item.Caption = tostring(shown)
+        item.SubItems.add(ev.name or "?")
+        -- Build category string
+        local cats = {}
+        for cat, _ in pairs(ev.categories) do cats[#cats+1] = cat end
+        item.SubItems.add(table.concat(cats, ", "))
+        item.SubItems.add(ev.type or "?")
+      end
+    end
+
+    lv.Items.EndUpdate()
+    lblCount.Caption = tostring(shown) .. " / " .. tostring(#_mtEvents) .. " events"
+  end
+  _evtRefreshList = refreshEventList
+
+  -- Wire filter controls
+  cmbCat.OnChange = function(sender) refreshEventList() end
+  edtSearch.OnChange = function(sender) refreshEventList() end
+
+  -- Spawn button (thread-gated)
+  local pnlSpawn = createPanel(tabEvents)
+  pnlSpawn.Left = RX; pnlSpawn.Top = EVT_PAD + 60; pnlSpawn.Width = 180; pnlSpawn.Height = 32
+  pnlSpawn.BevelOuter = 1
+  pnlSpawn.Color = 0xC0C0C0  -- starts grayed
+  pnlSpawn.Caption = ""
+
+  local btnSpawn = createButton(pnlSpawn)
+  btnSpawn.Left = 2; btnSpawn.Top = 2; btnSpawn.Width = 176; btnSpawn.Height = 28
+  btnSpawn.Caption = "生成到此处 Spawn Here"
+  btnSpawn.Font.Size = 9
+  btnSpawn.Enabled = false
+
+  local pnlSpawnWorld = createPanel(tabEvents)
+  pnlSpawnWorld.Left = RX; pnlSpawnWorld.Top = EVT_PAD + 96; pnlSpawnWorld.Width = 180; pnlSpawnWorld.Height = 32
+  pnlSpawnWorld.BevelOuter = 1
+  pnlSpawnWorld.Color = 0xC0C0C0
+  pnlSpawnWorld.Caption = ""
+  local btnSpawnWorld = createButton(pnlSpawnWorld)
+  btnSpawnWorld.Left = 2; btnSpawnWorld.Top = 2; btnSpawnWorld.Width = 176; btnSpawnWorld.Height = 28
+  btnSpawnWorld.Caption = "生成事件 Spawn Event"
+  btnSpawnWorld.Font.Size = 9
+  btnSpawnWorld.Enabled = false
+
+  -- Enable/disable Spawn Event button based on selected event type
+  lv.OnSelectItem = function(sender, item, selected)
+    if not selected then return end
+    local selIdx = lv.ItemIndex
+    if selIdx < 0 then return end
+    local evtIdx = _evtFilteredMap and _evtFilteredMap[selIdx + 1]
+    local ev = evtIdx and _mtEvents and _mtEvents[evtIdx]
+    local isWorld = ev and ev.type == "world"
+    btnSpawnWorld.Enabled = isWorld
+    pnlSpawnWorld.Color = isWorld and 0xFFFFFF or 0xC0C0C0
+  end
+
+  table.insert(_threadGatedControls, {panel = pnlSpawn, btn = btnSpawn})
+
+  -- Cache for festival/tournament template scans (lazy, one per type)
+  local _festTplCache = {}
+
+  -- Festival/tournament template finder: AOB scan for UTF-16 name, trace back to EventData
+  local function findEventTemplate(searchBytes)
+    local key = table.concat(searchBytes, ",")
+    if _festTplCache[key] then return _festTplCache[key] end
+
+    local aob = ""
+    for si, b in ipairs(searchBytes) do
+      if si > 1 then aob = aob .. " " end
+      aob = aob .. string.format("%02X", b)
+    end
+
+    local scanResult = AOBScan(aob, "+W")
+    if not scanResult then return nil end
+
+    -- We need _mtEdKlass to verify the object is an EventData
+    local edKlass = _mtEdKlass
+    if not edKlass then
+      object_destroy(scanResult)
+      return nil
+    end
+
+    local nChars = #searchBytes / 2
+    local templateED = nil
+    for i = 0, stringlist_getCount(scanResult) - 1 do
+      local charAddr = tonumber(stringlist_getString(scanResult, i), 16)
+      -- Verify string length matches
+      local strLen = readInteger(charAddr - 4)
+      if strLen and strLen == nChars then
+        local strObj = charAddr - 0x14
+        -- Search for pointer to this string at EventData.eventName (+0x10)
+        local sb = string.format("%02X %02X %02X %02X %02X %02X 00 00",
+          strObj & 0xFF, (strObj >> 8) & 0xFF, (strObj >> 16) & 0xFF,
+          (strObj >> 24) & 0xFF, (strObj >> 32) & 0xFF, (strObj >> 40) & 0xFF)
+        local refs = AOBScan(sb, "+W")
+        if refs then
+          for j = 0, stringlist_getCount(refs) - 1 do
+            local refAddr = tonumber(stringlist_getString(refs, j), 16)
+            local possibleED = refAddr - 0x10
+            if readQword(possibleED) == edKlass then
+              -- Verify it's a template (isAreaEvent=0, leftTime=0)
+              if readBytes(possibleED + 0x30, 1) == 0 and readInteger(possibleED + 0x60) == 0 then
+                templateED = possibleED
+                break
+              end
+            end
+          end
+          object_destroy(refs)
+        end
+        if templateED then break end
+      end
+    end
+    object_destroy(scanResult)
+
+    if templateED then _festTplCache[key] = templateED end
+    return templateED
+  end
+
+  -- Spawn an event by cloning its EventData template
+  local function spawnSpecialEvent(ev, difficulty)
+    local S = MT.hook.S
+    if not S.ready or not S.cmdBuf then return false, "Connect first" end
+
+    -- Get template address
+    local templateED = ev.addr
+    if not templateED and ev.search then
+      templateED = findEventTemplate(ev.search)
+    end
+    if not templateED and ev.templateIdx then
+      -- World events: resolve from WorldEventController DB list
+      local c0 = MT.il2cpp.init()
+      local wecClass = c0.findClass("WorldEventController")
+      if wecClass then
+        local wecSF = readQword(wecClass + 0xB8)
+        local wecInst = wecSF and readQword(wecSF) or 0
+        if wecInst ~= 0 then
+          local dbList = readQword(wecInst + 0x18)
+          if dbList and dbList ~= 0 then
+            local dbCount = readInteger(dbList + 0x18)
+            if ev.templateIdx < dbCount then
+              local items = readQword(dbList + 0x10)
+              templateED = readQword(items + 0x20 + ev.templateIdx * 8)
+            end
+          end
+        end
+      end
+    end
+    if not templateED or templateED == 0 then return false, "模板未找到 Template not found" end
+    MT.log.write(string.format("[EventTab] Spawning %s from template %X", ev.name, templateED))
+
+    local c = MT.il2cpp.init()
+    local getMeth = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+    local riAddr = getAddress("GameAssembly.il2cpp_runtime_invoke")
+    if not riAddr or riAddr == 0 then return false, "runtime_invoke not found" end
+    local cb = S.cmdBuf
+
+    -- World events: template is WorldEventDataBase, not EventData
+    -- WorldEventDataBase.eventData at +0x50 is the actual EventData to clone
+    if ev.type == "world" then
+      templateED = readQword(templateED + 0x50)
+      if not templateED or templateED == 0 then return false, "EventData not found in WorldEventDataBase" end
+    end
+
+    -- Non-world events: Clone via EventData.Clone()
+    local edKlass = _mtEdKlass
+    local cloneBuf = allocateMemory(32); writeString(cloneBuf, "Clone")
+    local cloneMI = executeCodeEx(0, nil, getMeth, edKlass, cloneBuf, 0)
+    deAlloc(cloneBuf)
+    if not cloneMI or cloneMI == 0 then return false, "EventData.Clone MI not found" end
+
+    writeQword(cb + 0x90, cloneMI)
+    writeQword(cb + 0x88, templateED)
+    writeQword(cb + 0xA0, 0)
+    writeQword(cb + 0x68, riAddr)
+    writeInteger(cb + 0x04, 0)
+    writeInteger(cb, 8)
+    local elapsed = 0
+    while elapsed < 5000 do
+      if readInteger(cb + 0x04) ~= 0 then break end
+      sleep(16); elapsed = elapsed + 16
+    end
+    if readInteger(cb + 0x04) ~= 1 then return false, "Clone failed" end
+    local clonedED = readQword(cb + 0x08)
+    if not clonedED or clonedED == 0 then return false, "Clone returned null" end
+
+    -- Set runtime fields on the clone
+    writeBytes(clonedED + 0x5E, {1})     -- autoDestroy = true
+    writeInteger(clonedED + 0x60, 15)    -- leftTime = 15 days
+    -- Set difficulty
+    if difficulty then
+      writeFloat(clonedED + 0x64, difficulty * 1.0)
+    else
+      local gcI = readQword(c.gc.static + c.gc.instOff)
+      local wd = readQword(gcI + 0x20)
+      local timeDiff = wd and readFloat(wd + 0xB0) or 5.0
+      local randVal = math.random() * 0.4 + 0.8
+      writeFloat(clonedED + 0x64, timeDiff * randVal)
+    end
+
+    local gcInst = readQword(c.gc.static + c.gc.instOff)
+    local worldData = readQword(gcInst + 0x20)
+    local heroList = readQword(worldData + 0x50)
+    local heroItems = readQword(heroList + 0x10)
+    local playerHero = readQword(heroItems + 0x20)
+    local playerAreaID = readInteger(playerHero + 0xC0)
+    if not playerAreaID or playerAreaID == 0xFFFFFFFF or playerAreaID < 0 then
+      return false, "大地图无法生成 [Can't spawn on BigMap]"
+    end
+
+    -- CreateAreaMapRandomEvent requires player to be in an area map (town/village)
+    writeBytes(clonedED + 0x30, {1})  -- isAreaEvent = true
+
+    local camBuf = allocateMemory(64); writeString(camBuf, "CreateAreaMapRandomEvent")
+    local camMI = executeCodeEx(0, nil, getMeth, c.gc.klass, camBuf, 2)
+    deAlloc(camBuf)
+    if not camMI or camMI == 0 then return false, "CreateAreaMapRandomEvent MI not found" end
+
+    -- Count events before call to detect if spawn succeeded despite exception
+    local eventList = readQword(worldData + 0x68)
+    local countBefore = eventList and readInteger(eventList + 0x18) or 0
+
+    writeQword(cb + 0xA0, clonedED)
+    writeInteger(cb + 0xB0, playerAreaID)
+    writeQword(cb + 0xA8, cb + 0xB0)
+    writeQword(cb + 0x90, camMI)
+    writeQword(cb + 0x88, gcInst)
+    writeQword(cb + 0x68, riAddr)
+    writeInteger(cb + 0x04, 0)
+    writeInteger(cb, 8)
+
+    elapsed = 0
+    while elapsed < 5000 do
+      if readInteger(cb + 0x04) ~= 0 then break end
+      sleep(16); elapsed = elapsed + 16
+    end
+    local status = readInteger(cb + 0x04)
+    if status == 1 then
+      return true, ev.name .. " 已生成 spawned"
+    else
+      -- Check if event was actually added despite the exception
+      local countAfter = eventList and readInteger(eventList + 0x18) or 0
+      if countAfter > countBefore then
+        return true, ev.name .. " 已生成 spawned (异常难度 abnormal difficulty)"
+      end
+      return false, "CreateAreaMapRandomEvent failed (status=" .. tostring(status) .. ")"
+    end
+  end
+
+  -- Spawn a world event via WorldEventController.CreateWorldEvent (v6 approach)
+  local _wecCreateMI = nil
+  local function spawnWorldEvent(ev, difficulty)
+    local S = MT.hook.S
+    if not S.ready or not S.cmdBuf then return false, "Connect first" end
+    local c = MT.il2cpp.init()
+    local cb = S.cmdBuf
+    local getMeth = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+    local riAddr = getAddress("GameAssembly.il2cpp_runtime_invoke")
+    if not riAddr or riAddr == 0 then return false, "runtime_invoke not found" end
+
+    -- Find WorldEventController._instance
+    local wecClass = c.findClass("WorldEventController")
+    if not wecClass then return false, "WorldEventController not found" end
+    local wecSF = readQword(wecClass + 0xB8)
+    if not wecSF or wecSF == 0 then return false, "WEC static=0" end
+    local wecInst = readQword(wecSF)
+    if not wecInst or wecInst == 0 then return false, "WEC instance=0" end
+
+    -- Get template from WEC DB list
+    local dbList = readQword(wecInst + 0x18)
+    if not dbList or dbList == 0 then return false, "WEC dbList=0" end
+    local dbCount = readInteger(dbList + 0x18)
+    if ev.templateIdx >= dbCount then return false, "Template index out of range" end
+    local items = readQword(dbList + 0x10)
+    local template = readQword(items + 0x20 + ev.templateIdx * 8)
+    if not template or template == 0 then return false, "Template null" end
+
+    -- Resolve CreateWorldEvent(EventData) on WEC (1 param)
+    if not _wecCreateMI then
+      local wecKlass = readQword(wecInst)
+      local strBuf = allocateMemory(64); writeString(strBuf, "CreateWorldEvent")
+      _wecCreateMI = executeCodeEx(0, nil, getMeth, wecKlass, strBuf, 1)
+      deAlloc(strBuf)
+      if not _wecCreateMI or _wecCreateMI == 0 then
+        _wecCreateMI = nil
+        return false, "CreateWorldEvent MI not found"
+      end
+    end
+
+    -- Set difficulty on template before spawn
+    local origDiff = readFloat(template + 0x64)
+    if difficulty then writeFloat(template + 0x64, difficulty * 1.0) end
+
+    writeQword(cb + 0xA0, template)
+    writeQword(cb + 0x90, _wecCreateMI)
+    writeQword(cb + 0x88, wecInst)
+    writeQword(cb + 0x68, riAddr)
+    writeQword(cb + 0x98, 0)
+    writeInteger(cb + 0x04, 0)
+    writeInteger(cb, 8)
+
+    local elapsed = 0
+    while elapsed < 5000 do
+      if readInteger(cb + 0x04) ~= 0 then break end
+      sleep(16); elapsed = elapsed + 16
+    end
+
+    -- Restore original difficulty
+    if difficulty then writeFloat(template + 0x64, origDiff) end
+
+    local status = readInteger(cb + 0x04)
+    if status == 1 then
+      return true, ev.name .. " 已生成 spawned"
+    else
+      return false, "CreateWorldEvent failed (status=" .. tostring(status) .. ")"
+    end
+  end
+
+  -- Helper: get selected event and difficulty
+  local function getSelectedEvent()
+    if not MT.ui.isConnected() then error("请先连接游戏 [Connect first]") end
+    local selIdx = lv.ItemIndex
+    if selIdx < 0 then error("请先选择一个事件 [Select an event first]") end
+    local evtIdx = _evtFilteredMap[selIdx + 1]
+    if not evtIdx then error("Invalid selection") end
+    local ev = _mtEvents[evtIdx]
+    if not ev then error("Event data not found") end
+    local diffVal = tonumber(edtDiff.Text) or -1
+    local difficulty = nil
+    if diffVal >= 0 then difficulty = diffVal end
+    return ev, difficulty
+  end
+
+  -- Spawn Here button (CreateAreaMapRandomEvent — requires being in an area)
+  btnSpawn.OnClick = function(sender)
+    local cap = "生成到此处 Spawn Here"
+    local ok, msg = pcall(function()
+      local ev, difficulty = getSelectedEvent()
+      if ev.type == "random" then
+        if not ev.addr then error("事件地址未找到 Event address not found") end
+      end
+      local spOk, spMsg = spawnSpecialEvent(ev, difficulty)
+      if not spOk then error(spMsg) end
+      return spMsg
+    end)
+    if ok and msg then
+      MT.ui.flashSuccess(pnlSpawn, btnSpawn, cap, tostring(msg))
+    elseif not ok then
+      MT.ui.flashFail(pnlSpawn, btnSpawn, cap, tostring(msg))
+    else
+      MT.ui.flashSuccess(pnlSpawn, btnSpawn, cap, "Event spawned!")
+    end
+  end
+
+  -- Spawn Event button (CreateWorldEvent — world events only, works anywhere)
+  btnSpawnWorld.OnClick = function(sender)
+    local cap = "生成事件 Spawn Event"
+    local ok, msg = pcall(function()
+      local ev, difficulty = getSelectedEvent()
+      if ev.type ~= "world" then error("仅限世界事件 [World events only]") end
+      local spOk, spMsg = spawnWorldEvent(ev, difficulty)
+      if not spOk then error(spMsg) end
+      return spMsg
+    end)
+    if ok and msg then
+      MT.ui.flashSuccess(pnlSpawnWorld, btnSpawnWorld, cap, tostring(msg))
+    elseif not ok then
+      MT.ui.flashFail(pnlSpawnWorld, btnSpawnWorld, cap, tostring(msg))
+    end
+  end
+
+  -- Hint labels
+  local lblHint1 = createLabel(tabEvents)
+  lblHint1.Left = RX; lblHint1.Top = EVT_PAD + 140
+  lblHint1.Caption = "难度 0-11=正常 12+=异常"
+  lblHint1.Font.Size = 8; lblHint1.Font.Color = 0x808080
+
+  local lblHint2 = createLabel(tabEvents)
+  lblHint2.Left = RX; lblHint2.Top = EVT_PAD + 160
+  lblHint2.Caption = "此处=区域内 事件=任何位置"
+  lblHint2.Font.Size = 8; lblHint2.Font.Color = 0x808080
+
+  local lblHint3 = createLabel(tabEvents)
+  lblHint3.Left = RX; lblHint3.Top = EVT_PAD + 180
+  lblHint3.Caption = "事件按钮仅限世界事件"
+  lblHint3.Font.Size = 8; lblHint3.Font.Color = 0x808080
+
+  -- Store right-panel controls for resize handler
+  _evtRightControls = {lblCount, pnlSpawn, pnlSpawnWorld, lblHint1, lblHint2, lblHint3}
+end
+
+-- ============================================================
+-- STATUS BAR (bottom of form)
+-- ============================================================
+
+local lblStatus = createLabel(frm)
+lblStatus.Left = 10
+lblStatus.Top = frm.ClientHeight - 22
+lblStatus.Width = frm.Width - 20
+lblStatus.AutoSize = false
+lblStatus.WordWrap = false
+lblStatus.Caption = "就绪 [Ready]"
+lblStatus.Font.Size = 9
+lblStatus.Font.Color = 0x808080
+
+-- Publish globals for cross-script access
+_mtStatusLbl = lblStatus
+_itemAdderForm = frm
+
+-- Close handler: kill all timers to prevent C stack overflow from _index recursion
+frm.OnClose = function(sender)
+  _itemAdderForm = nil
+  _mtStatusLbl = nil
+  local timers = {_maTabTimer, _evtLoaderTimer}
+  for _, t in ipairs(timers) do
+    if t then pcall(function() t.Enabled = false; t.destroy() end) end
+  end
+  _maTabTimer = nil
+  _evtLoaderTimer = nil
+end
+
+-- Resize handler: scale PageControl and Martial Arts tab controls with form
+frm.OnResize = function(sender)
+  local w = frm.ClientWidth
+  local h = frm.ClientHeight
+  pc.Width = w - 8
+  pc.Height = h - 68
+  -- Reposition status bar
+  if _mtStatusLbl then _mtStatusLbl.Top = h - 22; _mtStatusLbl.Width = w - 20 end
+  -- Martial Arts tab controls
+  if _maListView then
+    _maListView.Width = w - 20
+    _maListView.Top = 58  -- below filters + action bar
+    -- Split: ListView gets top portion, detail memo gets bottom
+    local detailH = 170
+    local lvH = pc.Height - 58 - detailH - 14
+    if lvH < 80 then lvH = 80 end
+    _maListView.Height = lvH
+    if _maDetailMemo then
+      _maDetailMemo.Top = _maListView.Top + lvH + 4
+      _maDetailMemo.Width = w - 20
+      _maDetailMemo.Height = pc.Height - _maDetailMemo.Top - 10
+    end
+  end
+  -- Events tab controls
+  if _evtListView then
+    local evtRX = w - 210
+    _evtListView.Width = evtRX - 20
+    _evtListView.Height = pc.Height - 60
+    if _evtRightControls then
+      for _, ctrl in ipairs(_evtRightControls) do
+        pcall(function() ctrl.Left = evtRX end)
+      end
+    end
+  end
+end
+
+-- ============================================================
+-- BACKGROUND EVENT LOADER -- fires every 2s, loads data once after Connect
+-- ============================================================
+
+_evtLoaderTimer = createTimer()
+_evtLoaderTimer.Interval = 2000
+_evtLoaderTimer.OnTimer = function(t)
+  local S = MT.hook.S
+  if not S or not S.ready then return end  -- wait for Connect
+  t.Enabled = false; t.destroy()
+
+  pcall(function()
+    _mtEvents = {}
+    local c = MT.il2cpp.init()
+    -- Find RandomEventController
+    local recClass = c.findClass("RandomEventController")
+    if not recClass then return end
+    local recInst = readQword(readQword(recClass + 0xB8))
+    if not recInst or recInst == 0 then return end
+    local reDB = readQword(recInst + 0x18)
+    if not reDB or reDB == 0 then return end
+    local reCnt = readInteger(reDB + 0x18) or 0
+    local reItems = readQword(reDB + 0x10)
+    if not reItems or reItems == 0 then return end
+
+    _mtEdKlass = readQword(readQword(reItems + 0x20))  -- EventData klass
+
+    -- Read all random events (just memory reads, instant)
+    local function readStr(ptr)
+      if not ptr or ptr == 0 then return "?" end
+      local nl = readInteger(ptr + 0x10)
+      if not nl or nl <= 0 or nl > 200 then return "?" end
+      return readString(ptr + 0x14, nl * 2, true) or "?"
+    end
+
+    for i = 0, reCnt - 1 do
+      local e = readQword(reItems + 0x20 + i * 8)
+      if e and e ~= 0 then
+        _mtEvents[#_mtEvents+1] = {idx=i, addr=e, name=readStr(readQword(e+0x10)),
+          type="random", categories={}}
+      end
+    end
+
+    -- Tag categories from index lists
+    local function tagCat(off, cat)
+      local list = readQword(recInst + off)
+      if not list or list == 0 then return end
+      local cnt = readInteger(list + 0x18) or 0
+      local items = readQword(list + 0x10)
+      if not items then return end
+      for i = 0, cnt - 1 do
+        local idx = readInteger(items + 0x20 + i * 4)
+        if idx then
+          for _, ev in ipairs(_mtEvents) do
+            if ev.idx == idx then ev.categories[cat] = true; break end
+          end
+        end
+      end
+    end
+    tagCat(0x38, "门派 Sect")
+    tagCat(0x48, "城镇 City")
+    tagCat(0x50, "村庄 Village")
+    tagCat(0x58, "客栈 Inn")
+    tagCat(0x28, "探索 Explore")
+    tagCat(0x30, "大地图 BigMap")
+
+    -- Hardcoded festivals (template addr found lazily at spawn)
+    local festivals = {"春节 Spring","元宵 Lantern","清明 QingMing","端午 DragonBoat",
+      "七夕 QiXi","中秋 MidAutumn","重阳 ChongYang","腊八 LaBa"}
+    local festSearch = {
+      {0x25,0x66,0x82,0x82},{0x43,0x51,0xB5,0x5B},{0x05,0x6E,0x0E,0x66},{0xEF,0x7A,0x48,0x53},
+      {0x03,0x4E,0x15,0x59},{0x2D,0x4E,0xCB,0x79},{0xCD,0x91,0x33,0x96},{0x4A,0x81,0x6B,0x51},
+    }
+    for fi, fn in ipairs(festivals) do
+      _mtEvents[#_mtEvents+1] = {idx=-1, addr=nil, name=fn, type="festival",
+        search=festSearch[fi], categories={["节日 Festival"]=true}}
+    end
+
+    -- Hardcoded tournaments
+    local tourns = {"比武大赛 FightTourney","辩才大赛 DebateTourney","赛马大会 HorseRace",
+      "拍卖大会 Auction","门派大比 SectContest"}
+    local tournSearch = {
+      {0x14,0x6B,0xE6,0x6B,0x27,0x59,0xDB,0x8D},{0xA9,0x8F,0x4D,0x62,0x27,0x59,0xDB,0x8D},
+      {0x5B,0x8D,0x6C,0x9A,0x27,0x59,0x1A,0x4F},{0xCD,0x62,0x56,0x53,0x27,0x59,0x1A,0x4F},
+      {0xE8,0x95,0x3E,0x6D,0x27,0x59,0x14,0x6B},
+    }
+    for ti, tn in ipairs(tourns) do
+      _mtEvents[#_mtEvents+1] = {idx=-1, addr=nil, name=tn, type="tournament",
+        search=tournSearch[ti], categories={["大赛 Tournament"]=true}}
+    end
+
+    -- Hardcoded world events (from v6, use WorldEventController.CreateWorldEvent)
+    local worldEvts = {
+      {13, "异草奇花 Rare Herb"}, {14, "仙木灵果 Spirit Fruit"},
+      {15, "失落宝藏 Lost Treasure"}, {16, "神兵现世 Divine Weapon"},
+      {17, "失传秘籍 Lost Manual"}, {18, "千里名驹 Famous Horse"},
+      {19, "武学奇才 Martial Prodigy"}, {20, "世外高人 Hidden Master"},
+      {21, "皇家宝库 Royal Treasury"}, {22, "神秘石碑 Mysterious Stele"},
+    }
+    for _, we in ipairs(worldEvts) do
+      _mtEvents[#_mtEvents+1] = {idx=-1, addr=nil, name=we[2], type="world",
+        templateIdx=we[1], categories={["世界 World"]=true}}
+    end
+
+    -- Refresh the Events tab list
+    if _evtRefreshList then _evtRefreshList() end
+    MT.log.write(string.format("[EventTab] Loaded %d events", #_mtEvents))
+  end)
+end
+_evtLoaderTimer.Enabled = true
+
+-- ============================================================
+-- SHOW
+-- ============================================================
+
+frm.Show()
+{$asm}
+
+[DISABLE]
+{$lua}
+if syntaxcheck then return end
+
+-- 1. Destroy GUI
+if _itemAdderForm then _itemAdderForm.destroy(); _itemAdderForm = nil end
+_mtStatusLbl = nil
+
+-- 2. Restore all toggle/patch state via MT.cheats disable functions
+pcall(MT.cheats.sect.memberLimitDisable)
+pcall(MT.cheats.sect.noCostDisable)
+pcall(MT.cheats.stats.talentSlotDisable)
+pcall(MT.cheats.stats.combatExpDisable)
+pcall(MT.cheats.stats.livingExpDisable)
+pcall(MT.cheats.battle.battleSpeedDisable)
+pcall(MT.cheats.explore.horseSpeedDisable)
+-- Talent cap patch (GetMaxTagNum) -- uses global _sectTalentCapPatches
+if _sectTalentCapPatches then
+  pcall(function()
+    local c2 = MT.il2cpp.init()
+    if c2:ensure("hd", "HeroData") then
+      local addr = MT.method.findAddr(c2.hd.klass, "GetMaxTagNum")
+      if addr then
+        for i = 1, #_sectTalentCapPatches do writeBytes(addr + i - 1, _sectTalentCapPatches[i]) end
+      end
+    end
+  end)
+  _sectTalentCapPatches = nil
+end
+
+-- 3. Clean up hook, dealloc memory, restore Update
+MT.hook.cleanup()
+{$asm}

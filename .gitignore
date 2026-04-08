@@ -1,0 +1,66 @@
+# Local-only directories
+archive/
+extras/
+patches/
+tools/
+!tools/crash_recovery.ps1
+!tools/resolve_funcs.py
+!tools/resolve_decomps.py
+!tools/rva_diff.py
+docs/
+analysis/
+
+# Large local-only data
+saves_backup/
+**/reference/
+
+
+# Debug logs and artifacts
+*.log
+*.tmp
+*.stackdump
+*.zip
+
+# OS files
+Thumbs.db
+desktop.ini
+
+# Excel lock files
+~$*.xlsx
+
+# Build output
+dist/
+
+# Generated from src/*.lua by build.py
+CheatTable/LuaScript.lua
+
+# Embedded table files (built from data/)
+CheatTable/Files/
+
+# Python cache
+__pycache__/
+
+# Screenshots (except readme screenshots)
+*.png
+!screenshot/*.png
+
+# Stale files
+selene.toml
+ce.yml
+AGENTS.md
+stats.png
+decompilation_pipeline.zip
+
+# Stale scripts (superseded by src/)
+scripts/AddBook.lua
+scripts/ItemAdder.lua
+scripts/skill_db.lua
+scripts/__init__.py
+
+# Claude local config
+.claude/skills/
+!.claude/skills/cheat-creator/
+!.claude/skills/game-decompiler/
+!.claude/skills/game-update/
+.mcp.json
+CLAUDE.md

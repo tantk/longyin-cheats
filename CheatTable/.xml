@@ -1,0 +1,4022 @@
+<CheatTable>
+  <CheatTableName>龙胤立志传 修改器 v8 / LongYinLiZhiZhuan Trainer v8</CheatTableName>
+  <LuaScript>
+-- src/00_init.lua — Global MT namespace and error settings
+-- ============================================================
+-- Long Yin Li Zhi Zhuan Xiu Gai Qi v8 -- Shared Core
+-- Loaded once on CT open. All shared functions in MT namespace.
+-- ============================================================
+
+-- Kill stale timers from previous CT load to prevent re-entry crashes
+if _maLoaderTimer then pcall(function() _maLoaderTimer.Enabled = false; _maLoaderTimer.destroy() end) end
+if _maTabTimer then pcall(function() _maTabTimer.Enabled = false; _maTabTimer.destroy() end) end
+if _skillLoaderTimer then pcall(function() _skillLoaderTimer.Enabled = false; _skillLoaderTimer.destroy() end) end
+if _evtLoaderTimer then pcall(function() _evtLoaderTimer.Enabled = false; _evtLoaderTimer.destroy() end) end
+-- NOTE: do NOT kill _autoConnectTimer — it's from autoload_save.lua and needs to survive CT load
+if _staleCheckTimer then pcall(function() _staleCheckTimer.Enabled = false; _staleCheckTimer.destroy() end) end
+_maLoaderTimer = nil
+_maTabTimer = nil
+_skillLoaderTimer = nil
+_evtLoaderTimer = nil
+-- _autoConnectTimer preserved for autoload_save.lua
+_staleCheckTimer = nil
+
+errorOnLookupFailure(false)
+MT = {}
+
+-- src/01_log.lua — Debug logging (MT.log)
+-- ============================================================
+-- MT.log -- Debug Logging
+-- ============================================================
+MT.log = {}
+
+do
+  local LOG_PATH = os.getenv("TEMP") .. "\\ce_itemadder_debug.log"
+  local _logFile = nil
+
+  function MT.log.open()
+    _logFile = io.open(LOG_PATH, "w")
+    if _logFile then _logFile:write("=== MultiTool v8 Debug Log ===\n") end
+  end
+
+  function MT.log.write(msg)
+    if _logFile then _logFile:write(os.date("%H:%M:%S ") .. tostring(msg) .. "\n"); _logFile:flush() end
+  end
+
+  function MT.log.close()
+    if _logFile then _logFile:close(); _logFile = nil end
+  end
+
+  function MT.log.toHex(addr)
+    if not addr then return "nil" end
+    return string.format("%X", addr)
+  end
+end
+
+-- Shorthand aliases used internally
+local log = MT.log.write
+local toHex = MT.log.toHex
+
+-- src/02_il2cpp.lua — IL2CPP class resolution, caching, ensure() (MT.il2cpp)
+-- ============================================================
+-- MT.il2cpp -- Class Resolution, Caching, ensure()
+-- ============================================================
+MT.il2cpp = {}
+
+function MT.il2cpp.init()
+  -- Check if cache is valid: GA base must match (game restart = new base)
+  if _il2cppCache then
+    local curGA = getAddress("GameAssembly.dll")
+    if curGA and curGA == _il2cppCache._gaBase then return _il2cppCache end
+    -- GA base changed = game restarted, clear stale cache
+    _il2cppCache = nil
+  end
+
+  -- Validate game is alive, auto-fix stale symbols
+  local gaAddr = MT.game.checkAlive()
+
+  -- Validate ALL il2cpp exports upfront to prevent nearby allocation popup
+  local exports = {
+    domainGet = getAddress("GameAssembly.il2cpp_domain_get"),
+    domainGetAsm = getAddress("GameAssembly.il2cpp_domain_get_assemblies"),
+    asmGetImage = getAddress("GameAssembly.il2cpp_assembly_get_image"),
+    classFromName = getAddress("GameAssembly.il2cpp_class_from_name"),
+  }
+  for name, addr in pairs(exports) do
+    if not addr or addr &lt; 0x100000 then
+      error("Please attach to game and load a save first")
+    end
+  end
+
+  local OFFSETS = {
+    gc_inst = 0x0,
+    gdc_inst = 0x20,
+    gdc_tagBase = 0x198,
+    gd_skill = 0x130,
+    bc_inst = 0x50,
+  }
+
+  -- Step 1: Get Assembly-CSharp image (3 calls)
+  local domain = executeCodeEx(0, nil, exports.domainGet)
+  if not domain or domain == 0 then error("il2cpp_domain_get failed") end
+  local sizePtr = allocateMemory(8); writeQword(sizePtr, 0)
+  local arr = executeCodeEx(0, nil, exports.domainGetAsm, domain, sizePtr)
+  local count = readInteger(sizePtr); deAlloc(sizePtr)
+  local asmPtr = readQword(arr + (count - 1) * 8)
+  local img = executeCodeEx(0, nil, exports.asmGetImage, asmPtr)
+
+  -- Step 2: Find classes (1 call each)
+  local cfn = exports.classFromName
+  local ns = allocateMemory(16); writeString(ns, "")
+  local cn = allocateMemory(64)
+  local function findClass(name)
+    writeString(cn, name)
+    local k = executeCodeEx(0, nil, cfn, img, ns, cn)
+    return k ~= 0 and k or nil
+  end
+
+  -- Only GameController is required. Others are resolved lazily (IL2CPP race condition).
+  local gc = findClass("GameController")
+  if not gc then error("GameController not found - is game loaded?") end
+  local gdc = findClass("GameDataController")
+  local gd  = findClass("GlobalData")
+  local hd  = findClass("HeroData")
+  local bc  = findClass("BattleController")
+  deAlloc(ns); deAlloc(cn)
+
+  local function klassData(k, instOff)
+    if not k then return nil end
+    return {klass=k, static=readQword(k+0xB8), instOff=instOff}
+  end
+
+  _il2cppCache = {
+    _gaBase = gaAddr, img = img, _cfn = cfn,
+    gc  = klassData(gc, OFFSETS.gc_inst),
+    gdc = gdc and {klass=gdc, static=readQword(gdc+0xB8), instOff=OFFSETS.gdc_inst, tagBaseOff=OFFSETS.gdc_tagBase} or nil,
+    gd  = gd and {klass=gd, static=readQword(gd+0xB8), skillOff=OFFSETS.gd_skill} or nil,
+    hd  = hd and {klass=hd} or nil,
+    bc  = bc and {klass=bc, static=readQword(bc+0xB8), instOff=OFFSETS.bc_inst} or nil,
+  }
+
+  -- Lazy resolver for classes not yet initialized
+  _il2cppCache.findClass = function(name)
+    local ns2 = allocateMemory(16); writeString(ns2, "")
+    local cn2 = allocateMemory(64); writeString(cn2, name)
+    local k = executeCodeEx(0, nil, _il2cppCache._cfn, _il2cppCache.img, ns2, cn2)
+    deAlloc(ns2); deAlloc(cn2)
+    return k ~= 0 and k or nil
+  end
+
+  -- Try to resolve missing classes on next access
+  -- extraFields is an optional table of additional fields to attach (e.g., {skillOff=0x130})
+  _il2cppCache.ensure = function(self, field, className, instOff, extraFields)
+    local existing = self[field]
+    if existing then
+      -- Refresh static pointer if it was 0 (class wasn't fully initialized yet)
+      if existing.klass and (not existing.static or existing.static == 0) then
+        existing.static = readQword(existing.klass + 0xB8)
+      end
+      -- Apply any missing extra fields
+      if extraFields then
+        for fk, fv in pairs(extraFields) do
+          if not existing[fk] then existing[fk] = fv end
+        end
+      end
+      return existing
+    end
+    local k = self.findClass(className)
+    if k then
+      local entry = {klass=k, static=readQword(k+0xB8)}
+      if instOff then entry.instOff = instOff end
+      if extraFields then
+        for fk, fv in pairs(extraFields) do entry[fk] = fv end
+      end
+      self[field] = entry
+    end
+    return self[field]
+  end
+
+  local found = 0
+  for _, k in ipairs({gc, gdc, gd, hd, bc}) do if k then found = found + 1 end end
+
+  -- Detect and display game version
+  local verStr = "?"
+  local fixStr = "?"
+  if gd then
+    local gdStatic = readQword(gd + 0xB8)
+    if gdStatic and gdStatic ~= 0 then
+      local vnPtr = readQword(gdStatic + 0x68)
+      if vnPtr and vnPtr ~= 0 then
+        local nl = readInteger(vnPtr + 0x10)
+        if nl and nl &gt; 0 then verStr = readString(vnPtr + 0x14, nl*2, true) or "?" end
+      end
+      local fnPtr = readQword(gdStatic + 0x70)
+      if fnPtr and fnPtr ~= 0 then
+        local nl = readInteger(fnPtr + 0x10)
+        if nl and nl &gt; 0 then fixStr = readString(fnPtr + 0x14, nl*2, true) or "?" end
+      end
+    end
+  end
+  local gaSize = getModuleSize("GameAssembly.dll") or 0
+  print(string.format("[Long Yin Li Zhi Zhuan] Version %s %s (GA: %d bytes, %d/5 classes)", verStr, fixStr, gaSize, found))
+
+  return _il2cppCache
+end
+
+function MT.il2cpp.reset()
+  _il2cppCache = nil
+  print("[il2cpp] Cache cleared - will re-init on next cheat activation")
+end
+
+-- src/03_game.lua — Game state helpers and method resolution (MT.game, MT.method)
+-- ============================================================
+-- MT.game -- getHero, getWorldData, isRunning, checkAlive
+-- ============================================================
+MT.game = {}
+
+function MT.game.checkAlive()
+  local gaAddr = getAddress("GameAssembly.dll")
+  if not gaAddr or gaAddr &lt; 0x100000 then
+    error("Game not running - please reattach CE to the game")
+  end
+  local testRead = readBytes(gaAddr, 1)
+  if not testRead then
+    -- Stale CE state -- reinitialize symbol list
+    reinitializeSymbolhandler()
+    gaAddr = getAddress("GameAssembly.dll")
+    if not gaAddr or gaAddr &lt; 0x100000 then
+      error("Stale CE state - please close CE and reopen")
+    end
+    testRead = readBytes(gaAddr, 1)
+    if not testRead then
+      error("Stale CE state - please close CE and reopen")
+    end
+  end
+  return gaAddr
+end
+
+function MT.game.isRunning()
+  local pid = getOpenedProcessID()
+  if not pid or pid == 0 then return false end
+  -- PID can be stale for dead process -- verify by reading memory
+  local ga = getAddress("GameAssembly.dll")
+  if not ga or ga &lt; 0x100000 then return false end
+  local b = readBytes(ga, 1)
+  return b ~= nil
+end
+
+function MT.game.getHero()
+  if not MT.game.isRunning() then return nil, "Game not running" end
+  local c = MT.il2cpp.init()
+  local inst = readQword(c.gc.static + c.gc.instOff)
+  if not inst or inst == 0 then
+    _il2cppCache = nil
+    c = MT.il2cpp.init()
+    inst = readQword(c.gc.static + c.gc.instOff)
+    if not inst or inst == 0 then return nil, "GameController._instance null (load a save first)" end
+  end
+  local wd = readQword(inst + 0x20); if not wd or wd == 0 then return nil, "WorldData null" end
+  local hl = readQword(wd + 0x50);  if not hl or hl == 0 then return nil, "HerosList null" end
+  local ip = readQword(hl + 0x10);  if not ip or ip == 0 then return nil, "HerosList items null" end
+  local h = readQword(ip + 0x20);   if not h or h == 0 then return nil, "Hero not found" end
+  return h, inst
+end
+
+function MT.game.getWorldData()
+  if not MT.game.isRunning() then return nil, "Game not running" end
+  local c = MT.il2cpp.init()
+  local inst = readQword(c.gc.static + c.gc.instOff)
+  if not inst or inst == 0 then
+    _il2cppCache = nil
+    c = MT.il2cpp.init()
+    inst = readQword(c.gc.static + c.gc.instOff)
+    if not inst or inst == 0 then return nil, "GameController._instance null" end
+  end
+  local wd = readQword(inst + 0x20); if not wd or wd == 0 then return nil, "WorldData null" end
+  return wd
+end
+
+-- ============================================================
+-- MT.method -- findMethodAddr
+-- ============================================================
+MT.method = {}
+
+function MT.method.findAddr(klass, methodName, paramCount)
+  -- Single il2cpp call instead of iterating all methods
+  local gmfn = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+  local nm = allocateMemory(64); writeString(nm, methodName)
+  local mi = executeCodeEx(0, nil, gmfn, klass, nm, paramCount or 0)
+  deAlloc(nm)
+  if not mi or mi == 0 then return nil end
+  return readQword(mi) -- methodPointer at offset 0
+end
+
+-- src/04_hook.lua — Hook state, allocWorkArea, shellExec, resolveAOBs, installMainThreadHook, discover, cleanup, command dispatch, helpers (MT.hook)
+-- ============================================================
+-- MT.hook -- Hook State, allocWorkArea, shellExec, resolveAOBs,
+--            installMainThreadHook, discover, cleanup, commands
+-- ============================================================
+MT.hook = {}
+
+-- Hook state (replaces loose locals in the old code)
+MT.hook.S = {}            -- discovery state (hero, ild, cmdBuf, base, ready, etc.)
+MT.hook.hookInstalled = false
+MT.hook.WK = { code = nil, data = nil, str = nil }
+MT.hook.RVA = {}
+MT.hook.AOB_SIGS = {
+  setBook   = {sig="48 8B 43 68 48 85 C0 0F 84 ?? ?? ?? ?? 89 78 10", off=0x3F},
+  setMat    = {sig="89 6B 18 89 73 3C 89 7B 40", off=0x48},
+  ctor      = {sig="C7 47 44 00 00 80 3F 48 8B CF E8 ?? ?? ?? ?? 89 5F 14 83 FB 06", off=0x6A},
+  clone     = {sig="48 89 5C 24 08 57 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8B F8 48 85 C0 74", off=0},
+}
+MT.hook._aobsResolved = false
+
+-- Equipment / treasure DB definitions (used by discover and item functions)
+MT.hook.equipDBs = {
+  {name="Weapon Wu Qi",     off=0xF0,  genMethod="GenerateWeapon", genParams=4},
+  {name="Armor Kui Jia",      off=0xF8,  genMethod="GenerateArmor", genParams=4},
+  {name="Helmet Tou Kui",     off=0x100, genMethod="GenerateHelmet", genParams=4},
+  {name="Shoes Xie",        off=0x108, genMethod="GenerateShoes", genParams=4},
+  {name="Accessory Shi Pin",  off=nil,   genMethod="GenerateDecoration", genParams=4,
+   staticItems={"Xiang Nang Sachet","Yu Shan Fan","Ban Zhi Ring","Yu Pei Pendant","Yao Dai Belt","Mian Ju Mask"}},
+  {name="HorseArmor Ma Jia", off=nil,  genMethod="GenerateHorseArmorData", genParams=2,
+   staticItems={"An Ju Saddle"}},
+}
+MT.hook.TREASURE_GEN_RVA = nil
+
+-- ============================================================
+-- MT.hook.allocWorkArea
+-- ============================================================
+function MT.hook.allocWorkArea()
+  local WK = MT.hook.WK
+  if WK.code then return true end
+  -- Clean up stale symbols from previous session.
+  -- IMPORTANT: unhook first if a prior session left Update pointing to old hookCode.
+  if _ia_harmonyPtrSlot and _ia_origChainTarget then
+    pcall(function() writeQword(_ia_harmonyPtrSlot, _ia_origChainTarget) end)
+    _ia_harmonyPtrSlot = nil; _ia_origChainTarget = nil
+  end
+  if _ia_directPatch and _ia_directPatchAddr and _ia_directPatchOrigBytes then
+    local n = _ia_patchLen or #_ia_directPatchOrigBytes
+    pcall(function()
+      for i = 1, n do writeBytes(_ia_directPatchAddr + i - 1, _ia_directPatchOrigBytes[i]) end
+    end)
+    _ia_directPatch = nil; _ia_patchLen = nil
+    if _ia_relayCode then pcall(deAlloc, _ia_relayCode); _ia_relayCode = nil end
+  end
+  sleep(100) -- drain any in-flight Update before freeing hook memory
+  -- Only unregister symbols, NEVER dealloc -- stale addresses from a previous
+  -- game session can point to valid memory in the new process, and freeing
+  -- them crashes the game. The old memory is already gone with the old process.
+  for _, n in ipairs({"cmdBuf","hookCode","origUpdatePtr","wkCode","wkData","wkStr"}) do
+    pcall(function() autoAssemble("unregistersymbol("..n..")") end)
+  end
+  local ok = autoAssemble([[
+alloc(wkCode, 512)
+alloc(wkData, 512)
+alloc(wkStr, 256)
+registersymbol(wkCode)
+registersymbol(wkData)
+registersymbol(wkStr)
+wkStr:
+db 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+db 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+wkData:
+dq 0 0 0 0 0 0 0 0
+wkCode:
+ret
+  ]])
+  if not ok then return false end
+  WK.code = getAddress("wkCode")
+  WK.data = getAddress("wkData")
+  WK.str = getAddress("wkStr")
+  return true
+end
+
+-- ============================================================
+-- MT.hook.shellExec
+-- ============================================================
+function MT.hook.shellExec(bytesFunc)
+  local WK = MT.hook.WK
+  local p = 0
+  local function w(b) writeBytes(WK.code + p, b); p = p + #b end
+  local function q(a) writeQword(WK.code + p, a); p = p + 8 end
+  local function d(v) writeInteger(WK.code + p, v); p = p + 4 end
+  bytesFunc(w, q, d)
+  createRemoteThread(WK.code)
+end
+
+-- ============================================================
+-- MT.hook.resolveAOBs
+-- ============================================================
+function MT.hook.resolveAOBs()
+  if MT.hook._aobsResolved then return end
+  local RVA = MT.hook.RVA
+  local AOB_SIGS = MT.hook.AOB_SIGS
+  local base = getAddress("GameAssembly.dll")
+  local modSize = getModuleSize("GameAssembly.dll") or 0x10000000
+  for name, info in pairs(AOB_SIGS) do
+    if not RVA[name] then
+      local r = AOBScan(info.sig, "+X")
+      if r and stringlist_getCount(r) &gt;= 1 then
+        local found = tonumber(stringlist_getString(r, 0), 16)
+        if found &gt;= base and found &lt; base + modSize then
+          RVA[name] = found - info.off - base
+          log("AOB " .. name .. " -&gt; RVA " .. string.format("%X", RVA[name]))
+        end
+        object_destroy(r)
+      end
+    end
+  end
+  MT.hook._aobsResolved = true
+end
+
+-- ============================================================
+-- MT.hook.installMainThreadHook
+-- ============================================================
+function MT.hook.installMainThreadHook()
+  if MT.hook.hookInstalled then return true end
+  log("installMainThreadHook start (pointer-swap)")
+  local S = MT.hook.S
+  local base = getAddress("GameAssembly.dll")
+  if not base or base &lt; 0x100000 then return false, "GameAssembly.dll not loaded (base=" .. tostring(base) .. ")" end
+  local modSize = getModuleSize("GameAssembly.dll") or 0x10000000
+
+  -- Find GameController class via il2cpp API
+  local getMethodFromName = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+  local domainGet = getAddress("GameAssembly.il2cpp_domain_get")
+  local domainGetAsm = getAddress("GameAssembly.il2cpp_domain_get_assemblies")
+  local imageFromAsm = getAddress("GameAssembly.il2cpp_assembly_get_image")
+  local classFromName = getAddress("GameAssembly.il2cpp_class_from_name")
+  if not getMethodFromName or getMethodFromName == 0 then
+    return false, "il2cpp_class_get_method_from_name not found"
+  end
+  if not classFromName or classFromName == 0 then
+    return false, "il2cpp exports missing"
+  end
+
+  -- Use cached game image from discover()
+  local gameImage = S.gameImage
+  if not gameImage or gameImage == 0 then return false, "Game image not cached (run discover first)" end
+
+  -- Use executeCodeEx (safe) instead of shellExec/createRemoteThread (crashes with BepInEx)
+  local c_hook = MT.il2cpp.init()
+
+  local function findClassFast(name)
+    local ns = allocateMemory(16); writeString(ns, "")
+    local cn = allocateMemory(64); writeString(cn, name)
+    local k = executeCodeEx(0, nil, classFromName, gameImage, ns, cn)
+    deAlloc(ns); deAlloc(cn)
+    return k ~= 0 and k or nil
+  end
+
+  -- Use GameDataController.Update (not GameController.Update) — GC.Update has
+  -- RIP-relative instructions in its prologue that break when relocated to relay.
+  -- GDC.Update has simpler entry bytes (40 56 48 83 EC 30).
+  local gdcClass = c_hook.gdc and c_hook.gdc.klass
+  if not gdcClass then
+    c_hook:ensure("gdc", "GameDataController", 0x20)
+    gdcClass = c_hook.gdc and c_hook.gdc.klass
+  end
+  if not gdcClass then return false, "GameDataController class not found" end
+  log("gcClass=" .. toHex(gdcClass))
+
+  -- Get MethodInfo* for Update(0 params) via executeCodeEx
+  local updateNameBuf = allocateMemory(32)
+  writeString(updateNameBuf, "Update")
+  local methodInfo = executeCodeEx(0, nil, getMethodFromName, gdcClass, updateNameBuf, 0)
+  deAlloc(updateNameBuf)
+  if not methodInfo or methodInfo == 0 then return false, "Update MethodInfo not found" end
+  log("methodInfo=" .. toHex(methodInfo))
+
+  -- Read the methodPointer (offset 0 of MethodInfo) = code address
+  local updateCodeAddr = readQword(methodInfo)
+  if not updateCodeAddr or updateCodeAddr == 0 then return false, "Update methodPointer is null" end
+  log("updateCodeAddr=" .. toHex(updateCodeAddr))
+
+  -- Read first 6 bytes to check for Harmony/BepInEx trampoline (FF 25 xx xx xx xx)
+  local b1 = readBytes(updateCodeAddr, 1)
+  local b2 = readBytes(updateCodeAddr + 1, 1)
+  log(string.format("First 2 bytes at Update: %02X %02X", b1 or 0, b2 or 0))
+
+  local harmonyPtrSlot = nil
+  local origChainTarget = nil
+
+  if b1 == 0xFF and b2 == 0x25 then
+    -- FF 25 = jmp [rip + disp32]. Decode the disp32.
+    local disp = readInteger(updateCodeAddr + 2)
+    -- disp32 is signed; handle negative values
+    if disp &gt;= 0x80000000 then disp = disp - 0x100000000 end
+    -- RIP-relative: target = addr_after_instruction + disp = (updateCodeAddr + 6) + disp
+    harmonyPtrSlot = updateCodeAddr + 6 + disp
+    origChainTarget = readQword(harmonyPtrSlot)
+    log("Harmony trampoline detected!")
+    log("  ptrSlot=" .. toHex(harmonyPtrSlot) .. " -&gt; chainTarget=" .. toHex(origChainTarget))
+  else
+    -- No Harmony/BepInEx. Use short 5-byte E9 JMP to hookCode (allocated near GameAssembly).
+    -- Only save bytes up to the first instruction boundary &gt;= 5 -- avoids RIP-relative relocation.
+    -- Check if Update is already E9-patched (stale from autoload or previous crash)
+    if b1 == 0xE9 then
+      log("WARNING: Stale E9 patch -- restoring original bytes: 40 56 48 83 EC 30")
+      writeBytes(updateCodeAddr, {0x40, 0x56, 0x48, 0x83, 0xEC, 0x30})
+      sleep(100)
+      b1 = readBytes(updateCodeAddr, 1)
+      b2 = readBytes(updateCodeAddr + 1, 1)
+    end
+    log("No Harmony trampoline -- will patch code entry directly")
+    harmonyPtrSlot = nil
+    _ia_directPatch = true
+    _ia_directPatchAddr = updateCodeAddr
+
+    -- Walk instructions to find boundary &gt;= 5 bytes (E9 rel32 jump)
+    -- GDC.Update has simple entry bytes (40 56 48 83 EC 30) without RIP-relative.
+    local boundary = 0
+    while boundary &lt; 5 do
+      local ok, s = pcall(disassemble, updateCodeAddr + boundary)
+      if not ok or type(s) ~= "string" then
+        return false, "Cannot disassemble at Update+" .. boundary
+      end
+      local hexBytes = s:match("%-%s(%x%x[%x ]-)%s%-")
+      if not hexBytes then
+        return false, "Cannot parse disassembly at Update+" .. boundary .. ": " .. s:sub(1, 80)
+      end
+      local instrSize = 0
+      for _ in hexBytes:gmatch("%x%x") do instrSize = instrSize + 1 end
+      if instrSize == 0 then
+        return false, "Zero-length instruction at Update+" .. boundary
+      end
+      boundary = boundary + instrSize
+    end
+    _ia_patchLen = boundary
+    log("Instruction boundary at " .. boundary .. " bytes")
+
+    _ia_directPatchOrigBytes = {}
+    for i = 0, boundary - 1 do
+      _ia_directPatchOrigBytes[i + 1] = readBytes(updateCodeAddr + i, 1) or 0
+    end
+    local origBytesHex = ""
+    for i = 1, boundary do origBytesHex = origBytesHex .. string.format("%02X ", _ia_directPatchOrigBytes[i]) end
+    log("Original " .. boundary .. " bytes at Update: " .. origBytesHex)
+
+    -- Build relay trampoline: [saved bytes] + [FF 25 00 00 00 00] + [updateCodeAddr+boundary]
+    local relaySize = boundary + 6 + 8
+    _ia_relayCode = allocateMemory(relaySize)
+    for i = 1, boundary do writeBytes(_ia_relayCode + i - 1, _ia_directPatchOrigBytes[i]) end
+    writeBytes(_ia_relayCode + boundary, {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00})
+    writeQword(_ia_relayCode + boundary + 6, updateCodeAddr + boundary)
+    origChainTarget = _ia_relayCode
+    log("Relay trampoline at " .. toHex(_ia_relayCode) .. " -&gt; continues at " .. toHex(updateCodeAddr + boundary))
+  end
+
+  -- Use executeCodeEx-based class/method lookup (safe, no shellExec)
+  local function findClassByName(name)
+    return findClassFast(name)
+  end
+
+  local function resolveMethodPtr(klass, methodName, paramCount)
+    local nmBuf = allocateMemory(64)
+    writeString(nmBuf, methodName)
+    local mi = executeCodeEx(0, nil, getMethodFromName, klass, nmBuf, paramCount)
+    deAlloc(nmBuf)
+    if not mi or mi == 0 then return nil end
+    local ptr = readQword(mi)
+    if not ptr or ptr == 0 then return nil end
+    return ptr
+  end
+
+  -- Resolve item-related classes (NON-FATAL -- only needed for cmd=1 GetItem)
+  -- These are deferred to ensureItemAdder() if they fail here
+  local heroClass = findClassByName("HeroData")
+  if heroClass then log("heroClass=" .. toHex(heroClass)) else log("HeroData: deferred") end
+
+  local getItemPtr = heroClass and resolveMethodPtr(heroClass, "GetItem", 5) or nil
+  if getItemPtr then log("getItemPtr=" .. toHex(getItemPtr)) else log("GetItem: deferred") end
+
+  local itemDataClass = findClassByName("ItemData")
+  if itemDataClass then log("itemDataClass=" .. toHex(itemDataClass)) else log("ItemData: deferred") end
+
+  local setBookPtr = itemDataClass and resolveMethodPtr(itemDataClass, "SetBookData", 2) or nil
+  if setBookPtr then
+    log("setBookPtr=" .. toHex(setBookPtr) .. " RVA=" .. string.format("%X", setBookPtr - base))
+    S.setBookAddr = setBookPtr
+  else
+    log("SetBookData: deferred")
+  end
+
+  -- Check if GetItem is Harmony-hooked (FF 25 trampoline). If so, unwrap to find the
+  -- original IL2CPP code address so we bypass Harmony's managed hooks.
+  if not getItemPtr then log("GetItem nil -- skipping Harmony check") end
+  local gi_b1 = getItemPtr and readBytes(getItemPtr, 1) or nil
+  local gi_b2 = getItemPtr and readBytes(getItemPtr + 1, 1) or nil
+  log(string.format("GetItem first 2 bytes: %02X %02X", gi_b1 or 0, gi_b2 or 0))
+  if gi_b1 == 0xFF and gi_b2 == 0x25 then
+    local gi_disp = readInteger(getItemPtr + 2)
+    if gi_disp &gt;= 0x80000000 then gi_disp = gi_disp - 0x100000000 end
+    local gi_ptrSlot = getItemPtr + 6 + gi_disp
+    local gi_harmonyTarget = readQword(gi_ptrSlot)
+    log("GetItem Harmony trampoline: ptrSlot=" .. toHex(gi_ptrSlot) .. " -&gt; " .. toHex(gi_harmonyTarget))
+
+    -- Harmony stub format: mov r10,DATA(10 bytes); mov rax,DISPATCHER(10 bytes); jmp rax(3 bytes)
+    -- At DATA+0x08: pointer to the original native trampoline (the "real" function)
+    local stub_b1 = readBytes(gi_harmonyTarget, 1)
+    local stub_b2 = readBytes(gi_harmonyTarget + 1, 1)
+    log(string.format("Harmony stub first 2 bytes: %02X %02X", stub_b1 or 0, stub_b2 or 0))
+    if stub_b1 == 0x49 and stub_b2 == 0xBA then
+      -- mov r10, imm64 -- read the DATA pointer
+      local dataPtr = readQword(gi_harmonyTarget + 2)
+      log("Harmony DATA ptr=" .. toHex(dataPtr))
+      if dataPtr and dataPtr ~= 0 then
+        -- Read first few qwords from DATA to find original function
+        for off = 0, 0x28, 8 do
+          local candidate = readQword(dataPtr + off)
+          if candidate and candidate ~= 0 then
+            local c1 = readBytes(candidate, 1)
+            local c2 = readBytes(candidate + 1, 1)
+            log(string.format("  DATA+%02X = %s -&gt; %02X %02X", off, toHex(candidate), c1 or 0, c2 or 0))
+            -- Real IL2CPP code typically starts with: 48 89 (mov [rsp+..]), 55 (push rbp), 56 (push rsi), 57 (push rdi)
+            if c1 and (c1 == 0x48 or c1 == 0x55 or c1 == 0x56 or c1 == 0x57 or c1 == 0x40 or c1 == 0x53) then
+              local inRange = (candidate &gt;= base and candidate &lt; base + modSize)
+              if inRange then
+                log("Found original GetItem code at DATA+" .. string.format("%02X", off) .. " = " .. toHex(candidate))
+                getItemPtr = candidate
+                break
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  log("Resolved: getItem=" .. toHex(getItemPtr))
+
+  _ia_getItemPtr = getItemPtr
+
+  -- Pre-allocate memory near GameAssembly.dll in Lua (silent, no CE dialog)
+  -- This ensures E9 rel32 can reach hookCode from the patch target.
+  local hookMem = allocateMemory(8192, S.base) or allocateMemory(8192)
+  if not hookMem or hookMem == 0 then return false, "Failed to allocate hook memory" end
+  local cmdBufMem = hookMem
+  local hookCodeMem = hookMem + 0x100
+  local origUpdateMem = hookMem + 0x1100
+  -- Register as symbols so AA script can reference them
+  autoAssemble("unregistersymbol(cmdBuf)\nunregistersymbol(hookCode)\nunregistersymbol(origUpdatePtr)")
+  registerSymbol("cmdBuf", cmdBufMem)
+  registerSymbol("hookCode", hookCodeMem)
+  registerSymbol("origUpdatePtr", origUpdateMem)
+  log(string.format("Pre-allocated: hookMem=%s cmdBuf=%s hookCode=%s origUpdate=%s",
+    toHex(hookMem), toHex(cmdBufMem), toHex(hookCodeMem), toHex(origUpdateMem)))
+
+  local aa = string.format([[
+cmdBuf:
+dq 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+
+origUpdatePtr:
+dq 0
+
+label(doGetItem)
+label(doCreateAndAdd)
+label(doAllocAndCtor)
+label(doGenEquip)
+label(doGenHero)
+label(skipNPCSkill)
+label(skipNPCItem)
+label(genHeroDone)
+label(genHeroError)
+label(doSimpleCall)
+label(doThreeIntCall)
+label(doPtrCall)
+label(noPtrCallParams)
+label(ptrCallReady)
+label(skipSetup)
+label(cmdDone)
+label(cmdError)
+label(noCmd)
+label(tailcall)
+
+hookCode:
+  push rax
+  push rbx
+  mov rbx,cmdBuf
+  mov eax,[rbx+40]
+  inc eax
+  mov [rbx+40],eax
+  // cmdBuf[+20] = GameController (written by discover, do NOT overwrite with GDC's this)
+  cmp dword ptr [rbx+38],1
+  jne noCmd
+  mov eax,[rbx]
+  test eax,eax
+  jz noCmd
+  cmp eax,1
+  je doGetItem
+  cmp eax,2
+  je doCreateAndAdd
+  cmp eax,3
+  je doAllocAndCtor
+  cmp eax,4
+  je doGenEquip
+  cmp eax,5
+  je doGenHero
+  cmp eax,6
+  je doSimpleCall
+  cmp eax,7
+  je doThreeIntCall
+  cmp eax,8
+  je doPtrCall
+  mov dword ptr [rbx+04],2
+  mov dword ptr [rbx],0
+  jmp noCmd
+
+doGetItem:
+  push rcx
+  push rdx
+  push r8
+  push r9
+  push r10
+  push r11
+  sub rsp,58
+  mov rcx,[rbx+28]
+  test rcx,rcx
+  jz cmdError
+  mov rdx,[rbx+08]
+  test rdx,rdx
+  jz cmdError
+  xor r8d,r8d
+  inc r8d
+  xor r9d,r9d
+  mov dword ptr [rsp+20],0
+  mov byte ptr [rsp+28],0
+  mov qword ptr [rsp+30],0
+  mov rax,[rbx+30]
+  call rax
+  jmp cmdDone
+
+doCreateAndAdd:
+  push rcx
+  push rdx
+  push r8
+  push r9
+  push r10
+  push r11
+  sub rsp,58
+  mov rcx,[rbx+50]
+  mov rax,[rbx+48]
+  call rax
+  test rax,rax
+  jz cmdError
+  mov [rbx+08],rax
+  mov rcx,rax
+  mov edx,[rbx+10]
+  mov rax,[rbx+58]
+  call rax
+  mov rax,[rbx+60]
+  test rax,rax
+  jz skipSetup
+  mov rcx,[rbx+08]
+  mov edx,[rbx+14]
+  mov r8d,[rbx+18]
+  mov r9d,[rbx+1C]
+  call rax
+skipSetup:
+  mov rcx,[rbx+28]
+  test rcx,rcx
+  jz cmdError
+  mov rdx,[rbx+08]
+  test rdx,rdx
+  jz cmdError
+  xor r8d,r8d
+  inc r8d
+  xor r9d,r9d
+  mov dword ptr [rsp+20],0
+  mov byte ptr [rsp+28],0
+  mov qword ptr [rsp+30],0
+  mov rax,[rbx+30]
+  call rax
+  jmp cmdDone
+
+doAllocAndCtor:
+  push rcx
+  push rdx
+  push r8
+  push r9
+  push r10
+  push r11
+  sub rsp,58
+  mov rcx,[rbx+50]
+  mov rax,[rbx+48]
+  call rax
+  test rax,rax
+  jz cmdError
+  mov [rbx+08],rax
+  mov rcx,rax
+  mov edx,[rbx+10]
+  mov rax,[rbx+58]
+  call rax
+  jmp cmdDone
+
+doGenEquip:
+  push rcx
+  push rdx
+  push r8
+  push r9
+  push r10
+  push r11
+  sub rsp,58
+  mov rcx,[rbx+20]
+  test rcx,rcx
+  jz cmdError
+  mov edx,[rbx+10]
+  mov r8d,[rbx+14]
+  mov eax,[rbx+18]
+  movd xmm2,eax
+  movd xmm3,eax
+  xor r9d,r9d
+  mov qword ptr [rsp+20],0
+  mov rax,[rbx+68]
+  call rax
+  test rax,rax
+  jz cmdError
+  mov [rbx+08],rax
+  jmp cmdDone
+
+doGenHero:
+  push rcx
+  push rdx
+  push r8
+  push r9
+  push r10
+  push r11
+  sub rsp,78
+  mov rcx,[rbx+20]
+  test rcx,rcx
+  jz genHeroError
+  xor edx,edx
+  mov r8d,FFFFFFFF
+  mov r9d,[rbx+10]
+  mov eax,[rbx+14]
+  mov dword ptr [rsp+20],eax
+  mov qword ptr [rsp+28],0
+  mov byte ptr [rsp+30],0
+  mov eax,[rbx+18]
+  mov dword ptr [rsp+38],eax
+  mov byte ptr [rsp+40],0
+  mov byte ptr [rsp+48],0
+  mov qword ptr [rsp+50],0
+  mov rax,[rbx+68]
+  call rax
+  test rax,rax
+  jz genHeroError
+  mov [rbx+08],rax
+  mov rax,[rbx+78]
+  test rax,rax
+  jz skipNPCSkill
+  mov rcx,[rbx+20]
+  mov rdx,[rbx+08]
+  call rax
+skipNPCSkill:
+  mov rax,[rbx+80]
+  test rax,rax
+  jz skipNPCItem
+  mov rcx,[rbx+20]
+  mov rdx,[rbx+08]
+  call rax
+skipNPCItem:
+  mov rax,[rbx+70]
+  test rax,rax
+  jz genHeroDone
+  mov rcx,[rbx+20]
+  mov rdx,[rbx+08]
+  xor r8d,r8d
+  inc r8d
+  call rax
+genHeroDone:
+  add rsp,78
+  pop r11
+  pop r10
+  pop r9
+  pop r8
+  pop rdx
+  pop rcx
+  mov dword ptr [rbx+04],1
+  mov dword ptr [rbx],0
+  jmp noCmd
+
+genHeroError:
+  add rsp,78
+  pop r11
+  pop r10
+  pop r9
+  pop r8
+  pop rdx
+  pop rcx
+  mov dword ptr [rbx+04],2
+  mov dword ptr [rbx],0
+  jmp noCmd
+
+doThreeIntCall:
+  push rcx
+  push rdx
+  push r8
+  push r9
+  push r10
+  push r11
+  sub rsp,58
+  mov rcx,[rbx+20]
+  test rcx,rcx
+  jz cmdError
+  mov edx,[rbx+10]
+  mov r8d,[rbx+14]
+  mov r9d,[rbx+18]
+  mov rax,[rbx+68]
+  call rax
+  test rax,rax
+  jz cmdError
+  mov [rbx+08],rax
+  jmp cmdDone
+
+doPtrCall:
+  push rcx
+  push rdx
+  push r8
+  push r9
+  push r10
+  push r11
+  sub rsp,58
+  mov rcx,[rbx+90]
+  test rcx,rcx
+  jz cmdError8
+  mov rdx,[rbx+88]
+  cmp qword ptr [rbx+A0],0
+  je noPtrCallParams
+  lea r8,[rbx+A0]
+  jmp ptrCallReady
+noPtrCallParams:
+  xor r8,r8
+ptrCallReady:
+  lea r9,[rbx+98]
+  mov qword ptr [rbx+98],0
+  mov rax,[rbx+68]
+  call rax
+  mov [rbx+08],rax
+  cmp qword ptr [rbx+98],0
+  jne cmdError8
+  add rsp,58
+  pop r11
+  pop r10
+  pop r9
+  pop r8
+  pop rdx
+  pop rcx
+  mov dword ptr [rbx+04],1
+  mov dword ptr [rbx],0
+  jmp noCmd
+cmdError8:
+  add rsp,58
+  pop r11
+  pop r10
+  pop r9
+  pop r8
+  pop rdx
+  pop rcx
+  mov dword ptr [rbx+04],2
+  mov dword ptr [rbx],0
+  jmp noCmd
+
+doSimpleCall:
+  push rcx
+  push rdx
+  push r8
+  push r9
+  push r10
+  push r11
+  sub rsp,58
+  mov rcx,[rbx+08]
+  xor edx,edx
+  mov rax,[rbx+68]
+  call rax
+  mov [rbx+08],rax
+  jmp cmdDone
+
+cmdDone:
+  add rsp,58
+  pop r11
+  pop r10
+  pop r9
+  pop r8
+  pop rdx
+  pop rcx
+  mov dword ptr [rbx+04],1
+  mov dword ptr [rbx],0
+  jmp noCmd
+
+cmdError:
+  add rsp,58
+  pop r11
+  pop r10
+  pop r9
+  pop r8
+  pop rdx
+  pop rcx
+  mov dword ptr [rbx+04],2
+  mov dword ptr [rbx],0
+
+noCmd:
+  pop rbx
+  pop rax
+
+tailcall:
+  jmp qword ptr [origUpdatePtr]
+]]
+  )
+
+  log("AA script prepared")
+  local ok, errMsg = autoAssemble(aa)
+  log("autoAssemble returned: " .. tostring(ok) .. " err: " .. tostring(errMsg))
+  if not ok then return false, "AA failed: " .. tostring(errMsg) end
+
+  local cmdBufAddr = getAddress("cmdBuf")
+  local hookCodeAddr = getAddress("hookCode")
+  local origPtrSlot = getAddress("origUpdatePtr")
+  log("cmdBuf=" .. toHex(cmdBufAddr) .. " hookCode=" .. toHex(hookCodeAddr) .. " origPtrSlot=" .. toHex(origPtrSlot))
+
+  -- Write the chain target (Harmony handler or original code) to origUpdatePtr slot
+  writeQword(origPtrSlot, origChainTarget)
+
+  if harmonyPtrSlot then
+    -- Overwrite Harmony's indirect jump pointer to point to our hook
+    writeQword(harmonyPtrSlot, hookCodeAddr)
+    local verify = readQword(harmonyPtrSlot)
+    if verify ~= hookCodeAddr then return false, "Harmony ptrSlot write failed" end
+    log("Wrote hookCode to Harmony ptrSlot OK")
+
+    -- Store for DISABLE cleanup
+    _ia_harmonyPtrSlot = harmonyPtrSlot
+    _ia_origChainTarget = origChainTarget
+    _ia_methodInfo = nil
+    _ia_origUpdatePtr = nil
+  elseif _ia_directPatch then
+    -- Write JMP to hookCode at the patch address
+    local rel32 = hookCodeAddr - (_ia_directPatchAddr + 5)
+    local patch
+    if rel32 &gt;= -0x80000000 and rel32 &lt;= 0x7FFFFFFF then
+      -- Direct E9 rel32 JMP fits (hookCode is within 2GB)
+      if rel32 &lt; 0 then rel32 = rel32 + 0x100000000 end
+      patch = {0xE9,
+        rel32 % 256,
+        math.floor(rel32 / 256) % 256,
+        math.floor(rel32 / 65536) % 256,
+        math.floor(rel32 / 16777216) % 256}
+      for i = 6, _ia_patchLen do patch[#patch + 1] = 0x90 end
+      log("Using direct E9 rel32 patch")
+    else
+      -- hookCode too far for E9 rel32 — patch with 14-byte FF 25 absolute jump
+      -- Requires at least 14 bytes at the patch site (6 bytes FF25 + 8 bytes addr)
+      if _ia_patchLen &lt; 14 then
+        -- Not enough space for FF 25 — use relay trampoline
+        _ia_relayCode = allocateMemory(32)
+        if not _ia_relayCode or _ia_relayCode == 0 then
+          return false, "Failed to allocate relay trampoline"
+        end
+        writeBytes(_ia_relayCode, {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00})
+        writeQword(_ia_relayCode + 6, hookCodeAddr)
+        local relRelay = _ia_relayCode - (_ia_directPatchAddr + 5)
+        if relRelay &lt; 0 then relRelay = relRelay + 0x100000000 end
+        patch = {0xE9,
+          relRelay % 256,
+          math.floor(relRelay / 256) % 256,
+          math.floor(relRelay / 65536) % 256,
+          math.floor(relRelay / 16777216) % 256}
+        for i = 6, _ia_patchLen do patch[#patch + 1] = 0x90 end
+        log(string.format("Using relay trampoline at %s", toHex(_ia_relayCode)))
+      else
+        -- Enough space: write FF 25 00 00 00 00 + 8-byte hookCode addr directly
+        patch = {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00}
+        local addrBytes = {}
+        local addr = hookCodeAddr
+        for i = 1, 8 do addrBytes[i] = addr % 256; addr = math.floor(addr / 256) end
+        for i = 1, 8 do patch[#patch + 1] = addrBytes[i] end
+        for i = 15, _ia_patchLen do patch[#patch + 1] = 0x90 end
+        log(string.format("Using direct FF25 absolute jump to %s", toHex(hookCodeAddr)))
+      end
+    end
+    writeBytes(_ia_directPatchAddr, patch)
+    local verify = readBytes(_ia_directPatchAddr, 1)
+    if verify ~= 0xE9 and verify ~= 0xFF then return false, "Direct code patch failed" end
+    log(string.format("Direct patch OK at %s (first byte=%02X, padded to %d bytes)",
+        toHex(_ia_directPatchAddr), verify, _ia_patchLen))
+
+    _ia_harmonyPtrSlot = nil
+    _ia_origChainTarget = nil
+    _ia_methodInfo = nil
+    _ia_origUpdatePtr = nil
+  end
+
+  log("Hook pointer written -- verifying heartbeat...")
+
+  -- Verify the hook is actually running by watching the heartbeat counter
+  local cmdBufAddr2 = getAddress("cmdBuf")
+  local hb1 = readInteger(cmdBufAddr2 + 0x40) or 0
+  sleep(200)  -- wait ~12 frames at 60fps
+  local hb2 = readInteger(cmdBufAddr2 + 0x40) or 0
+  log(string.format("Heartbeat check: before=%d after=%d (delta=%d)", hb1, hb2, hb2 - hb1))
+
+  if hb2 &lt;= hb1 then
+    log("ERROR: Heartbeat not incrementing -- hook is NOT running!")
+    -- Restore original pointer to avoid leaving broken hook
+    if harmonyPtrSlot then
+      writeQword(harmonyPtrSlot, origChainTarget)
+      log("Restored Harmony pointer after failed heartbeat")
+    elseif _ia_directPatch and _ia_directPatchOrigBytes then
+      local n = _ia_patchLen or #_ia_directPatchOrigBytes
+      for i = 1, n do writeBytes(_ia_directPatchAddr + i - 1, _ia_directPatchOrigBytes[i]) end
+      log("Restored original bytes after failed heartbeat")
+      _ia_directPatch = nil; _ia_patchLen = nil
+      if _ia_relayCode then deAlloc(_ia_relayCode); _ia_relayCode = nil end
+    end
+    return false, "Hook installed but not running (heartbeat=0). Game may not call Update through this path."
+  end
+
+  -- Hook is running! Now enable command processing.
+  writeInteger(cmdBufAddr2 + 0x38, 1)
+  log("Hook verified and commands ENABLED")
+
+  log("Hook installed OK")
+  MT.hook.hookInstalled = true
+  return true
+end
+
+-- ============================================================
+-- MT.hook.discover
+-- ============================================================
+function MT.hook.discover(fastMode)
+  MT.log.open()
+  log("=== discover(" .. (fastMode and "fast" or "full") .. ") start ===")
+  local S = MT.hook.S
+  local RVA = MT.hook.RVA
+  local equipDBs = MT.hook.equipDBs
+  -- Force clear all caches to prevent stale pointer issues
+  _il2cppCache = nil
+  MT.hook._aobsResolved = false
+  MT.hook.S = {}
+  S = MT.hook.S
+  S.base = getAddress("GameAssembly.dll")
+  log("S.base = " .. toHex(S.base))
+  if not S.base or S.base == 0 then return false, "GameAssembly.dll not loaded" end
+  if not MT.hook.allocWorkArea() then return false, "Work area alloc failed" end
+
+  local classFromName = getAddress("GameAssembly.il2cpp_class_from_name")
+  local objNew = getAddress("GameAssembly.il2cpp_object_new")
+  if not objNew or objNew == 0 then return false, "il2cpp exports missing" end
+  S.objNew = objNew
+
+  -- Use executeCodeEx (proven safe) instead of shellExec/createRemoteThread (crashes)
+  local c = MT.il2cpp.init()
+  local gameImage = c.img
+  S.gameImage = gameImage
+  log("Game image from il2cpp.init: " .. toHex(gameImage))
+
+  local function findClass(name)
+    local ns = allocateMemory(16); writeString(ns, "")
+    local cn = allocateMemory(64); writeString(cn, name)
+    local k = executeCodeEx(0, nil, classFromName, gameImage, ns, cn)
+    deAlloc(ns); deAlloc(cn)
+    return k ~= 0 and k or nil
+  end
+
+  log("About to findClass GameController...")
+  local gcClass = findClass("GameController")
+  log("gcClass=" .. toHex(gcClass or 0))
+  if not gcClass or gcClass == 0 then return false, "GameController not found" end
+  log("About to findClass GameDataController...")
+  local gdcClass = findClass("GameDataController")
+  log("gdcClass=" .. toHex(gdcClass or 0))
+
+  local gc = readQword(c.gc.static + c.gc.instOff)
+  if not gc or gc == 0 then return false, "GC._instance null (load save)" end
+  S.gc = gc
+  log("gc=" .. toHex(gc))
+
+  if gdcClass then
+    if c:ensure("gdc", "GameDataController", 0x20) then
+      S.gdc = readQword(c.gdc.static + c.gdc.instOff)
+    end
+  end
+
+  -- Auto-detect ItemData field offsets (changed between early f7 and f7.6+)
+  -- f7.6+/f8: medFoodData=0x68, horseData=0x88
+  -- early f7: medFoodData=0x60, horseData=0x80
+  S.OFF_MEDFOOD = 0x68  -- default (f7.6+/f8)
+  S.OFF_HORSE = 0x88
+  if S.gdc and S.gdc ~= 0 then
+    local hdb = readQword(S.gdc + 0x120) -- horseDataBase
+    if hdb and hdb ~= 0 then
+      local hitems = readQword(hdb + 0x10)
+      local ht = hitems and readQword(hitems + 0x20) -- first horse template
+      if ht and ht ~= 0 then
+        local at88 = readQword(ht + 0x88)
+        local at80 = readQword(ht + 0x80)
+        if (not at88 or at88 == 0) and at80 and at80 ~= 0 then
+          S.OFF_MEDFOOD = 0x60
+          S.OFF_HORSE = 0x80
+          log("Detected early f7 offsets: medFood=0x60, horse=0x80")
+        else
+          log("Using standard offsets: medFood=0x68, horse=0x88")
+        end
+      end
+    end
+  end
+
+  local wd = readQword(gc + 0x20)
+  if not wd or wd == 0 then return false, "WorldData null" end
+  local hl = readQword(wd + 0x50)
+  if not hl or hl == 0 then return false, "HerosList null" end
+  local ip = readQword(hl + 0x10)
+  if not ip or ip == 0 then return false, "HerosList items null" end
+  local ph = readQword(ip + 0x20)
+  if not ph or ph == 0 then return false, "Hero not found" end
+  S.hero = ph
+  local ild = readQword(ph + 0x220)
+  if not ild or ild == 0 then return false, "ItemListData null" end
+  S.ild = ild
+  S.ildKlass = readQword(S.ild)
+  log("hero=" .. toHex(ph) .. " ild=" .. toHex(ild))
+
+  local ail = readQword(S.ild + 0x28)
+  if not ail or ail == 0 then return false, "allItem list null" end
+  local ic = readInteger(ail + 0x18)
+  local ia = readQword(ail + 0x10)
+  for i = 0, ic - 1 do
+    local it = readQword(ia + 0x20 + i * 8)
+    if it and it ~= 0 then
+      if not S.itemKlass then S.itemKlass = readQword(it) end
+    end
+  end
+  if not S.itemKlass then return false, "No items in inventory" end
+
+  -- Try loading RVAs from cache (keyed by GA DLL size)
+  local gaSize = getModuleSize("GameAssembly.dll") or 0
+  local cached = MT.cache.load(gaSize)
+  if cached then
+    local cacheHits = 0
+    for k, v in pairs(cached) do
+      local prefix, name = k:match("^(%a+)%.(.+)$")
+      if prefix == "rva" and type(v) == "number" then
+        RVA[name] = v
+        cacheHits = cacheHits + 1
+      elseif prefix == "aob" and type(v) == "number" then
+        RVA[name] = v
+        cacheHits = cacheHits + 1
+      end
+    end
+    if cacheHits &gt; 0 then
+      log(string.format("Loaded %d RVAs from cache (GA=%d bytes)", cacheHits, gaSize))
+    end
+  end
+
+  -- Resolve ALL method RVAs at runtime (skip if already cached)
+  local gmfn = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+  local function resolveRVA(klass, name, params)
+    if RVA[name] then return RVA[name] end  -- skip if cached
+    local nm = allocateMemory(64); writeString(nm, name)
+    local mi = executeCodeEx(0, nil, gmfn, klass, nm, params)
+    deAlloc(nm)
+    if not mi or mi == 0 then return nil end
+    local addr = readQword(mi)
+    return addr and addr ~= 0 and (addr - S.base) or nil
+  end
+
+  local heroClass = c:ensure("hd", "HeroData") and c.hd.klass
+  local itemClass = findClass("ItemData")
+  local ildClass = findClass("ItemListData")
+
+  if heroClass then
+    RVA.getItem = resolveRVA(heroClass, "GetItem", 5)
+  end
+  if itemClass then
+    RVA.ctor = resolveRVA(itemClass, ".ctor", 1)
+    RVA.setBook = resolveRVA(itemClass, "SetBookData", 2)
+    RVA.setMat = resolveRVA(itemClass, "SetMaterialData", 3)
+    RVA.clone = resolveRVA(itemClass, "Clone", 0)
+  end
+  if ildClass then
+    RVA.ildCtor = resolveRVA(ildClass, ".ctor", 0)
+    RVA.mergeList = resolveRVA(ildClass, "MergeList", 1)
+  end
+  if gcClass then
+    RVA.genMedById = resolveRVA(gcClass, "GenerateMedData", 2)
+    RVA.genFoodById = resolveRVA(gcClass, "GenerateFoodData", 2)
+    RVA.genHorseById = resolveRVA(gcClass, "GenerateHorseData", 2)
+    RVA.genMaterial = resolveRVA(gcClass, "GenerateMaterial", 3)
+    RVA.genHorseArmor = resolveRVA(gcClass, "GenerateHorseArmorData", 2)
+  end
+  S.setBookAddr = S.base + (RVA.setBook or 0)
+
+  -- Resolve equipment generator RVAs
+  if gcClass then
+    for _, db in ipairs(equipDBs) do
+      db.genRVA = RVA[db.genMethod] or resolveRVA(gcClass, db.genMethod, db.genParams)
+      RVA[db.genMethod] = db.genRVA  -- ensure it's in RVA table for cache
+    end
+    MT.hook.TREASURE_GEN_RVA = RVA["GenerateTreasure"] or resolveRVA(gcClass, "GenerateTreasure", 3)
+    RVA["GenerateTreasure"] = MT.hook.TREASURE_GEN_RVA
+    if not RVA.genHeroData9 then RVA.genHeroData9 = nil end  -- 9-param overload
+    if not RVA.worldAddHero then RVA.worldAddHero = nil end
+    if not RVA.joinForce then RVA.joinForce = nil end
+    -- Use method iterator (skip if all RVAs already cached)
+    local needIter = not (RVA.recruitHero and RVA.genNPCSkill and RVA.genNPCItem
+      and RVA.genHeroData6 and RVA.genHeroData9 and RVA.worldAddHero
+      and RVA.joinForce and RVA.wdAddNewHero)
+    local iterMethods = getAddress("GameAssembly.il2cpp_class_get_methods")
+    local iterGetName = getAddress("GameAssembly.il2cpp_method_get_name")
+    local iterGetParamName = getAddress("GameAssembly.il2cpp_method_get_param_name")
+    -- Scan GameController methods (skip if all cached)
+    if not needIter then log("All iter RVAs cached, skipping method scan") end
+    local it = allocateMemory(8); writeQword(it, 0)
+    for i = 1, needIter and 500 or 0 do
+      local mi = executeCodeEx(0, nil, iterMethods, gcClass, it)
+      if not mi or mi == 0 then break end
+      local np = executeCodeEx(0, nil, iterGetName, mi)
+      local mn = np and readString(np, 64) or ""
+      local addr = readQword(mi)
+      local rva = addr - S.base
+      if mn == "ManagePlayerRecruitHero" and not RVA.recruitHero then RVA.recruitHero = rva end
+      if mn == "RandomGenerateNPCSkill" and not RVA.genNPCSkill then RVA.genNPCSkill = rva end
+      if mn == "RandomGenerateNPCItem" and not RVA.genNPCItem then RVA.genNPCItem = rva end
+      if mn == "GenerateHeroData" and not RVA.genHeroData6 then
+        local p1 = executeCodeEx(0, nil, iterGetParamName, mi, 0)
+        local p1name = p1 and readString(p1, 32) or ""
+        if p1name == "heroID" then RVA.genHeroData6 = rva end
+      end
+      if mn == "GenerateHeroData" and not RVA.genHeroData9 then
+        -- Check if this is the 9-param overload (has sexLimit param)
+        local p6 = executeCodeEx(0, nil, iterGetParamName, mi, 6)
+        local p6name = p6 and readString(p6, 32) or ""
+        if p6name == "sexLimit" then RVA.genHeroData9 = rva end
+      end
+      if mn == "WorldAddNewHero" then RVA.worldAddHero = rva end
+    end
+    deAlloc(it)
+    -- Scan HeroData for JoinForce
+    local hdClass2 = findClass("HeroData")
+    if hdClass2 and not RVA.joinForce then
+      it = allocateMemory(8); writeQword(it, 0)
+      for i = 1, 200 do
+        local mi = executeCodeEx(0, nil, iterMethods, hdClass2, it)
+        if not mi or mi == 0 then break end
+        local np = executeCodeEx(0, nil, iterGetName, mi)
+        local mn = np and readString(np, 64) or ""
+        if mn == "JoinForce" then RVA.joinForce = readQword(mi) - S.base; break end
+      end
+      deAlloc(it)
+    end
+    -- Scan WorldData for AddNewHero
+    local wdClass = findClass("WorldData")
+    if wdClass and not RVA.wdAddNewHero then
+      it = allocateMemory(8); writeQword(it, 0)
+      for i = 1, 200 do
+        local mi = executeCodeEx(0, nil, iterMethods, wdClass, it)
+        if not mi or mi == 0 then break end
+        local np = executeCodeEx(0, nil, iterGetName, mi)
+        local mn = np and readString(np, 64) or ""
+        if mn == "AddNewHero" then RVA.wdAddNewHero = readQword(mi) - S.base; break end
+      end
+      deAlloc(it)
+    end
+    log(string.format("Hero RVAs: genHero9=%s wdAdd=%s joinForce=%s worldAddHero=%s",
+      tostring(RVA.genHeroData9), tostring(RVA.wdAddNewHero), tostring(RVA.joinForce), tostring(RVA.worldAddHero)))
+  end
+
+  -- Log game version + resolved RVAs for crash analysis
+  local gaSize = getModuleSize("GameAssembly.dll")
+  local verInfo = "?"
+  if c.gd then
+    pcall(function()
+      local gs = readQword(c.findClass("GlobalData") + 0xB8)
+      local vn = readQword(gs + 0x68)
+      local fn = readQword(gs + 0x70)
+      local v = readString(vn + 0x14, readInteger(vn + 0x10) * 2, true)
+      local f = readString(fn + 0x14, readInteger(fn + 0x10) * 2, true)
+      verInfo = v .. " " .. f
+    end)
+  end
+  log(string.format("Game: %s (GA=%d bytes)", verInfo, gaSize or 0))
+  log(string.format("RVAs: getItem=%s ctor=%s genWeapon=%s genTreasure=%s",
+    tostring(RVA.getItem), tostring(RVA.ctor), tostring(equipDBs[1].genRVA), tostring(MT.hook.TREASURE_GEN_RVA)))
+
+  -- Install main-thread hook
+  local hookOk, hookErr = MT.hook.installMainThreadHook()
+  if not hookOk then return false, "Hook: " .. (hookErr or "unknown") end
+
+  local cmdBuf = getAddress("cmdBuf")
+  S.cmdBuf = cmdBuf
+  S.ready = true
+
+  -- Write essential pointers to cmdBuf (needed by all commands, including fast mode)
+  writeQword(cmdBuf + 0x20, S.gc or 0)
+  writeQword(cmdBuf + 0x28, S.hero or 0)
+
+  -- Fast mode: hook installed, done. Skip item/class resolution.
+  if fastMode then
+    log("discover(fast) OK -- hook only")
+    return true, "Hook installed (fast mode)"
+  end
+
+  -- Full mode: resolve everything for item adding
+  MT.hook.resolveAOBs()
+  writeQword(cmdBuf + 0x28, S.hero)
+  writeQword(cmdBuf + 0x30, _ia_getItemPtr or 0)
+  writeQword(cmdBuf + 0x48, S.objNew)
+  writeQword(cmdBuf + 0x50, S.itemKlass)
+  writeQword(cmdBuf + 0x58, S.base + (RVA.ctor or 0))
+
+  -- Save RVAs + AOBs to cache for next session
+  if gaSize &gt; 0 then
+    local aobRVAs = {}
+    for name, _ in pairs(MT.hook.AOB_SIGS) do
+      if RVA[name] then aobRVAs[name] = RVA[name] end
+    end
+    if MT.cache.save(gaSize, RVA, aobRVAs) then
+      log("RVA cache saved for GA=" .. gaSize)
+    end
+  end
+
+  log("discover(full) OK: " .. ic .. " items")
+  return true, string.format("OK! %d items. Hook:Y GDC:%s", ic, S.gdc and "Y" or "N")
+end
+
+-- ============================================================
+-- MT.hook.cleanup -- Unhook and dealloc (called on DISABLE)
+-- ============================================================
+function MT.hook.cleanup()
+  -- 1. Close debug log
+  MT.log.close()
+
+  -- 2. Disarm command gate + clear pending commands before unhook
+  local ok_cb, cmdBufAddr = pcall(getAddress, "cmdBuf")
+  if ok_cb and cmdBufAddr and cmdBufAddr ~= 0 then
+    writeInteger(cmdBufAddr + 0x38, 0)  -- disable command processing
+    writeInteger(cmdBufAddr, 0)          -- clear any pending command
+    writeInteger(cmdBufAddr + 0x04, 0)   -- clear status
+  end
+
+  -- 3. Unhook GameController.Update
+  if _ia_harmonyPtrSlot and _ia_origChainTarget then
+    writeQword(_ia_harmonyPtrSlot, _ia_origChainTarget)
+    print("[MultiTool] Restored Harmony trampoline pointer")
+    _ia_harmonyPtrSlot = nil
+    _ia_origChainTarget = nil
+    sleep(100)
+  elseif _ia_directPatch and _ia_directPatchAddr and _ia_directPatchOrigBytes then
+    local n = _ia_patchLen or #_ia_directPatchOrigBytes
+    for i = 1, n do writeBytes(_ia_directPatchAddr + i - 1, _ia_directPatchOrigBytes[i]) end
+    print("[MultiTool] Restored original Update code bytes")
+    _ia_directPatch = nil; _ia_patchLen = nil
+    _ia_directPatchAddr = nil
+    _ia_directPatchOrigBytes = nil
+    if _ia_relayCode then deAlloc(_ia_relayCode); _ia_relayCode = nil end
+    sleep(100)
+  end
+
+  -- 4. Dealloc + unregister symbols (pcall-guarded)
+  local function tryDealloc(name)
+    local ok2, addr = pcall(getAddress, name)
+    if not ok2 or not addr or addr == 0 then return end
+    pcall(autoAssemble, string.format("unregistersymbol(%s)", name))
+    pcall(autoAssemble, string.format("dealloc(%s)", name))
+  end
+  tryDealloc("wkCode")
+  tryDealloc("wkData")
+  tryDealloc("wkStr")
+  tryDealloc("cmdBuf")
+  tryDealloc("hookCode")
+  tryDealloc("origUpdatePtr")
+
+  -- 5. Reset state
+  MT.hook.hookInstalled = false
+  MT.hook.S = {}
+  MT.hook.WK = { code = nil, data = nil, str = nil }
+  _ia_hookInstalled = nil
+end
+
+-- ============================================================
+-- MT.hook command dispatch (main-thread calls)
+-- ============================================================
+
+function MT.hook.mainThreadGetItem(itemDataPtr, timeout)
+  local S = MT.hook.S
+  if not S.cmdBuf then return false, "Not connected" end
+  timeout = timeout or 3000
+  log(string.format("cmd1 GetItem: item=%s hero=%s getItemPtr=%s", toHex(itemDataPtr), toHex(S.hero), toHex(_ia_getItemPtr)))
+  writeQword(S.cmdBuf + 0x08, itemDataPtr)
+  writeQword(S.cmdBuf + 0x28, S.hero or 0)
+  writeQword(S.cmdBuf + 0x30, _ia_getItemPtr or 0)
+  writeInteger(S.cmdBuf + 0x04, 0)
+  writeInteger(S.cmdBuf, 1)
+  local elapsed = 0
+  while elapsed &lt; timeout do
+    local status = readInteger(S.cmdBuf + 0x04)
+    if status == 1 then
+      return true, readQword(S.cmdBuf + 0x18)
+    elseif status == 2 then
+      return false, "Command failed (status=2)"
+    end
+    sleep(16)
+    elapsed = elapsed + 16
+  end
+  local st = readInteger(S.cmdBuf + 0x04)
+  local gcVal = readQword(S.cmdBuf + 0x20)
+  local cmdVal = readInteger(S.cmdBuf) or 0
+  local msg = string.format("Timeout cmd=%d st=%d gc=%X", cmdVal, st, gcVal or 0)
+  log("cmd1 " .. msg)
+  return false, msg
+end
+
+function MT.hook.mainThreadCreateAndAdd(itemType, setupFunc, arg1, arg2, arg3, timeout)
+  local S = MT.hook.S
+  local RVA = MT.hook.RVA
+  if not S.cmdBuf then return false, "Not connected" end
+  timeout = timeout or 3000
+  log(string.format("cmd2 CreateAndAdd: type=%d setup=%s args=%s/%s/%s", itemType, toHex(setupFunc), tostring(arg1), tostring(arg2), tostring(arg3)))
+  writeInteger(S.cmdBuf + 0x10, itemType)
+  writeInteger(S.cmdBuf + 0x14, arg1 or 0)
+  writeInteger(S.cmdBuf + 0x18, arg2 or 0)
+  writeInteger(S.cmdBuf + 0x1C, arg3 or 0)
+  writeQword(S.cmdBuf + 0x28, S.hero or 0)
+  writeQword(S.cmdBuf + 0x30, _ia_getItemPtr or 0)
+  writeQword(S.cmdBuf + 0x48, S.objNew)
+  writeQword(S.cmdBuf + 0x50, S.itemKlass)
+  writeQword(S.cmdBuf + 0x58, S.base + RVA.ctor)
+  writeQword(S.cmdBuf + 0x60, setupFunc or 0)
+  writeInteger(S.cmdBuf + 0x04, 0)
+  writeInteger(S.cmdBuf, 2)
+  local elapsed = 0
+  while elapsed &lt; timeout do
+    local status = readInteger(S.cmdBuf + 0x04)
+    if status == 1 then return true, readQword(S.cmdBuf + 0x08) end
+    if status == 2 then return false, "CreateAndAdd failed" end
+    sleep(16)
+    elapsed = elapsed + 16
+  end
+  return false, "Timeout"
+end
+
+function MT.hook.mainThreadAllocCtor(itemType, timeout)
+  local S = MT.hook.S
+  local RVA = MT.hook.RVA
+  if not S.cmdBuf then return false, "Not connected" end
+  timeout = timeout or 3000
+  log(string.format("cmd3 AllocCtor: type=%d", itemType))
+  writeInteger(S.cmdBuf + 0x10, itemType)
+  writeQword(S.cmdBuf + 0x48, S.objNew)
+  writeQword(S.cmdBuf + 0x50, S.itemKlass)
+  writeQword(S.cmdBuf + 0x58, S.base + RVA.ctor)
+  writeInteger(S.cmdBuf + 0x04, 0)
+  writeInteger(S.cmdBuf, 3)
+  local elapsed = 0
+  while elapsed &lt; timeout do
+    local status = readInteger(S.cmdBuf + 0x04)
+    if status == 1 then return true, readQword(S.cmdBuf + 0x08) end
+    if status == 2 then return false, "AllocCtor failed" end
+    sleep(16)
+    elapsed = elapsed + 16
+  end
+  return false, "Timeout"
+end
+
+-- ============================================================
+-- MT.hook helpers (getItemName, allocItem, callFunc, mergeIntoInventory)
+-- ============================================================
+
+function MT.hook.getItemName(ptr)
+  if not ptr or ptr == 0 then return "?" end
+  local np = readQword(ptr + 0x20)
+  if not np or np == 0 then return "?" end
+  local nl = readInteger(np + 0x10)
+  if not nl or nl &lt;= 0 or nl &gt; 200 then return "?" end
+  return readString(np + 0x14, nl * 2, true) or "?"
+end
+
+function MT.hook.allocItem()
+  local S = MT.hook.S
+  local WK = MT.hook.WK
+  writeQword(WK.data, 0)
+  MT.hook.shellExec(function(w, q)
+    w({0x48,0x83,0xEC,0x28})
+    w({0x48,0xB9}); q(S.itemKlass)
+    w({0x48,0xB8}); q(S.objNew); w({0xFF,0xD0})
+    w({0x48,0xA3}); q(WK.data)
+    w({0x48,0x83,0xC4,0x28}); w({0xC3})
+  end)
+  sleep(300)
+  return readQword(WK.data)
+end
+
+function MT.hook.callFunc(thisPtr, funcRVA, arg1, arg2, arg3)
+  local S = MT.hook.S
+  MT.hook.shellExec(function(w, q, d)
+    w({0x48,0x83,0xEC,0x28})
+    w({0x48,0xB9}); q(thisPtr)
+    if arg1 then w({0xBA}); d(arg1) else w({0x33,0xD2}) end
+    if arg2 then w({0x41,0xB8}); d(arg2) else w({0x45,0x33,0xC0}) end
+    if arg3 then w({0x41,0xB9}); d(arg3) else w({0x4D,0x31,0xC9}) end
+    w({0x48,0xB8}); q(S.base + funcRVA); w({0xFF,0xD0})
+    w({0x48,0x83,0xC4,0x28}); w({0xC3})
+  end)
+  sleep(300)
+end
+
+function MT.hook.mergeIntoInventory(itemPtr)
+  local S = MT.hook.S
+  local RVA = MT.hook.RVA
+  local WK = MT.hook.WK
+  writeQword(WK.data + 0x10, 0)
+  MT.hook.shellExec(function(w, q)
+    w({0x48,0x83,0xEC,0x28})
+    w({0x48,0xB9}); q(S.ildKlass); w({0x48,0xB8}); q(S.objNew); w({0xFF,0xD0})
+    w({0x48,0x85,0xC0}); w({0x74,0x35})
+    w({0x48,0xA3}); q(WK.data + 0x10)
+    w({0x48,0x8B,0xC8}); w({0x33,0xD2})
+    w({0x48,0xB8}); q(S.base + RVA.ildCtor); w({0xFF,0xD0})
+    w({0x48,0xA1}); q(WK.data + 0x10)
+    w({0x48,0x8B,0x48,0x28}); w({0x48,0x8B,0x51,0x10})
+    w({0x48,0xB8}); q(itemPtr)
+    w({0x48,0x89,0x42,0x20})
+    w({0xC7,0x41,0x18,0x01,0x00,0x00,0x00})
+    w({0x48,0xB9}); q(S.ild)
+    w({0x48,0xA1}); q(WK.data + 0x10)
+    w({0x48,0x8B,0xD0}); w({0x45,0x33,0xC0})
+    w({0x48,0xB8}); q(S.base + RVA.mergeList); w({0xFF,0xD0})
+    w({0x48,0x83,0xC4,0x28}); w({0xC3})
+  end)
+  sleep(400)
+end
+
+-- src/05_items.lua — Item creation functions (MT.items)
+-- ============================================================
+-- MT.items -- addBook, addMaterial, addMedFood, addHorse,
+--             addEquipGenerated, addEquipment, addTreasure
+-- ============================================================
+MT.items = {}
+
+function MT.items.addBook(skillID, rareLv)
+  local S = MT.hook.S
+  if not S.ready then return false, "Connect first" end
+  local ok, ptr = MT.hook.mainThreadCreateAndAdd(3, S.setBookAddr, skillID, rareLv, 0)
+  if not ok then return false, ptr end
+  return true, MT.hook.getItemName(ptr)
+end
+
+function MT.items.addMaterial(subType, itemLv, rareLv)
+  local S = MT.hook.S
+  local RVA = MT.hook.RVA
+  if not S.ready or not S.cmdBuf then return false, "Connect first" end
+  if not RVA.genMaterial then
+    -- Fallback to old method if GenerateMaterial not resolved
+    local ok, ptr = MT.hook.mainThreadCreateAndAdd(5, S.base + RVA.setMat, subType, itemLv, rareLv)
+    if not ok then return false, ptr end
+    return true, MT.hook.getItemName(ptr)
+  end
+  -- Use GenerateMaterial(materialType, itemLv, bossLv) via cmd=4
+  -- bossLv is read from xmm3 (not r9!), cmd=4 sets xmm3 from [+0x18]
+  writeInteger(S.cmdBuf + 0x10, subType)
+  writeInteger(S.cmdBuf + 0x14, itemLv)
+  writeFloat(S.cmdBuf + 0x18, rareLv * 1.0)
+  writeQword(S.cmdBuf + 0x68, S.base + RVA.genMaterial)
+  writeInteger(S.cmdBuf + 0x04, 0)
+  writeInteger(S.cmdBuf, 4)
+  local elapsed = 0
+  while elapsed &lt; 3000 do
+    if readInteger(S.cmdBuf + 0x04) ~= 0 then break end
+    sleep(16); elapsed = elapsed + 16
+  end
+  if readInteger(S.cmdBuf + 0x04) ~= 1 then return false, "Generation failed" end
+  local newItem = readQword(S.cmdBuf + 0x08)
+  if not newItem or newItem == 0 then return false, "Returned null" end
+  local itemName = MT.hook.getItemName(newItem)
+  local ok2, result = MT.hook.mainThreadGetItem(newItem)
+  if not ok2 then return false, result end
+  return true, itemName
+end
+
+function MT.items.addMedFood(dbIndex, dbOffset, bossLv)
+  local S = MT.hook.S
+  local RVA = MT.hook.RVA
+  if not S.ready or not S.cmdBuf then return false, "Connect first" end
+  bossLv = bossLv or 5
+  local genRVA = (dbOffset == 0x110) and RVA.genMedById or RVA.genFoodById
+  if not genRVA then return false, "Generate method not resolved" end
+
+  -- Use game's GenerateMedData(id, bossLv) or GenerateFoodData(id, bossLv) via cmd=4
+  -- cmd=4: rcx=GC, edx=[+0x10]=id, r8d=[+0x14]=bossLv, call [+0x68]
+  writeInteger(S.cmdBuf + 0x10, dbIndex)
+  writeInteger(S.cmdBuf + 0x14, 0)
+  writeFloat(S.cmdBuf + 0x18, bossLv * 1.0)  -- bossLv via xmm2
+  writeQword(S.cmdBuf + 0x68, S.base + genRVA)
+  writeInteger(S.cmdBuf + 0x04, 0)
+  writeInteger(S.cmdBuf, 4)
+  local elapsed = 0
+  while elapsed &lt; 3000 do
+    if readInteger(S.cmdBuf + 0x04) ~= 0 then break end
+    sleep(16); elapsed = elapsed + 16
+  end
+  if readInteger(S.cmdBuf + 0x04) ~= 1 then return false, "Generation failed" end
+  local newItem = readQword(S.cmdBuf + 0x08)
+  if not newItem or newItem == 0 then return false, "Returned null" end
+
+  local itemName = MT.hook.getItemName(newItem)
+  local ok2, result = MT.hook.mainThreadGetItem(newItem)
+  if not ok2 then return false, result end
+  return true, itemName
+end
+
+function MT.items.addHorse(dbIndex, rareLv)
+  local S = MT.hook.S
+  local RVA = MT.hook.RVA
+  if not S.ready or not S.cmdBuf then return false, "Connect first" end
+  if not RVA.genHorseById then return false, "GenerateHorseData not resolved" end
+
+  -- Use game's GenerateHorseData(id, bossLv) via cmd=4
+  -- bossLv read from xmm2, cmd=4 sets xmm2 from [+0x18]
+  writeInteger(S.cmdBuf + 0x10, dbIndex)
+  writeInteger(S.cmdBuf + 0x14, 0)
+  writeFloat(S.cmdBuf + 0x18, (rareLv or 5) * 1.0)
+  writeQword(S.cmdBuf + 0x68, S.base + RVA.genHorseById)
+  writeInteger(S.cmdBuf + 0x04, 0)
+  writeInteger(S.cmdBuf, 4)
+  local elapsed = 0
+  while elapsed &lt; 3000 do
+    if readInteger(S.cmdBuf + 0x04) ~= 0 then break end
+    sleep(16); elapsed = elapsed + 16
+  end
+  if readInteger(S.cmdBuf + 0x04) ~= 1 then return false, "Generation failed" end
+  local newItem = readQword(S.cmdBuf + 0x08)
+  if not newItem or newItem == 0 then return false, "Returned null" end
+
+  -- Set 100% tame on the generated horse
+  local horseData = readQword(newItem + S.OFF_HORSE)
+  if horseData and horseData ~= 0 then
+    writeFloat(horseData + 0x3C, 1.0)
+  end
+
+  local itemName = MT.hook.getItemName(newItem)
+  local ok2, result = MT.hook.mainThreadGetItem(newItem)
+  if not ok2 then return false, result end
+  return true, itemName
+end
+
+function MT.items.addEquipGenerated(genRVA, dbIndex, bossLv, qualityRate, timeout)
+  local S = MT.hook.S
+  if not S.ready or not S.cmdBuf then return false, "Connect first" end
+  timeout = timeout or 3000
+  log(string.format("cmd4 GenEquip: RVA=%X idx=%d bossLv=%d rate=%.1f", genRVA, dbIndex, bossLv, qualityRate or 1.0))
+
+  -- Write parameters to cmdBuf
+  -- PARAMS SWAPPED: edx=bossLv, r8d=weaponIndex (confirmed by test)
+  writeInteger(S.cmdBuf + 0x10, bossLv)        -- param1 (edx): boss level (stat scaling)
+  writeInteger(S.cmdBuf + 0x14, dbIndex)       -- param2 (r8): weapon/armor DB index
+  writeFloat(S.cmdBuf + 0x18, qualityRate or 1.0) -- param3 (xmm3): quality rate
+  writeQword(S.cmdBuf + 0x68, S.base + genRVA)
+
+  -- Trigger cmd=4
+  writeInteger(S.cmdBuf + 0x04, 0)  -- clear status
+  writeInteger(S.cmdBuf, 4)         -- set command
+
+  -- Wait for completion
+  local elapsed = 0
+  while elapsed &lt; timeout do
+    local status = readInteger(S.cmdBuf + 0x04)
+    if status == 1 then
+      local newItem = readQword(S.cmdBuf + 0x08)
+      if not newItem or newItem == 0 then return false, "Generator returned null" end
+      local itemName = MT.hook.getItemName(newItem)
+      log("Generated: " .. itemName .. " at " .. toHex(newItem))
+      -- Now add to inventory via cmd=1
+      local ok2, _ = MT.hook.mainThreadGetItem(newItem)
+      if not ok2 then return false, "GetItem failed" end
+      return true, itemName
+    elseif status == 2 then
+      return false, "Generator failed (status=2)"
+    end
+    sleep(16)
+    elapsed = elapsed + 16
+  end
+  -- Timeout: dump full cmdBuf state for diagnosis
+  local dCmd = readInteger(S.cmdBuf) or -1
+  local dStatus = readInteger(S.cmdBuf + 0x04) or -1
+  local dResult = readQword(S.cmdBuf + 0x08) or 0
+  local dGC = readQword(S.cmdBuf + 0x20) or 0
+  local dGate = readInteger(S.cmdBuf + 0x38) or -1
+  local dHB = readInteger(S.cmdBuf + 0x40) or -1
+  local dFunc = readQword(S.cmdBuf + 0x68) or 0
+  local dump = string.format(
+    "TIMEOUT DUMP: cmd=%d status=%d result=%s gc=%s gate=%d heartbeat=%d func=%s",
+    dCmd, dStatus, toHex(dResult), toHex(dGC), dGate, dHB, toHex(dFunc))
+  log(dump)
+  return false, dump
+end
+
+function MT.items.addEquipment(dbOff, dbIndex, desiredLv, desiredRare)
+  local S = MT.hook.S
+  if not S.ready then return false, "Connect first" end
+  if not S.gdc or S.gdc == 0 then return false, "GDC not found" end
+
+  local db = readQword(S.gdc + dbOff)
+  if not db or db == 0 then return false, "DataBase null" end
+  local items = readQword(db + 0x10)
+  local count = readInteger(db + 0x18)
+  if dbIndex &gt;= count then return false, string.format("Index %d &gt;= count %d", dbIndex, count) end
+  local template = readQword(items + 0x20 + dbIndex * 8)
+  if not template or template == 0 then return false, "Template null" end
+
+  -- Create new ItemData (type=0 for equipment)
+  local ok2, ni = MT.hook.mainThreadAllocCtor(0)
+  if not ok2 or not ni or ni == 0 then return false, "alloc fail" end
+
+  -- Copy base ItemData fields from template
+  writeInteger(ni + 0x10, readInteger(template + 0x10) or 0)  -- itemID
+  writeInteger(ni + 0x18, readInteger(template + 0x18) or 0)  -- subType
+  writeQword(ni + 0x20, readQword(template + 0x20) or 0)      -- name
+  writeQword(ni + 0x28, readQword(template + 0x28) or 0)      -- checkName
+  writeQword(ni + 0x30, readQword(template + 0x30) or 0)      -- describe
+  writeInteger(ni + 0x38, readInteger(template + 0x38) or 0)   -- value
+  writeInteger(ni + 0x3C, desiredLv or 3)                       -- itemLv
+  writeInteger(ni + 0x40, desiredRare or 5)                     -- rareLv
+  writeFloat(ni + 0x44, readFloat(template + 0x44) or 1.0)     -- weight
+
+  -- Clone EquipmentData and generate stats from best existing equipment
+  local templateEqd = readQword(template + 0x60)
+  if templateEqd and templateEqd ~= 0 then
+    local eqdClass = readQword(templateEqd)
+    local newEqd = executeCodeEx(0, nil, S.objNew, eqdClass)
+    if newEqd and newEqd ~= 0 then
+      -- Copy all EquipmentData fields (0x10 to 0x4C)
+      for off = 0x10, 0x4C, 4 do
+        writeInteger(newEqd + off, readInteger(templateEqd + off) or 0)
+      end
+      writeQword(newEqd + 0x38, readQword(templateEqd + 0x38) or 0) -- animName
+      writeQword(newEqd + 0x40, readQword(templateEqd + 0x40) or 0) -- equipPoisonData
+
+      -- Find best existing equipment in inventory to clone stats from
+      local bestBaseAdd = nil
+      local bestExtraAdd = nil
+      local bestLv = -1
+      local heroIld = readQword(S.hero + 0x220)
+      if heroIld and heroIld ~= 0 then
+        local heroAllItem = readQword(heroIld + 0x28)
+        if heroAllItem and heroAllItem ~= 0 then
+          local heroItemCount = readInteger(heroAllItem + 0x18) or 0
+          local heroItemArr = readQword(heroAllItem + 0x10)
+          if heroItemArr and heroItemArr ~= 0 then
+            for ii = 0, heroItemCount - 1 do
+              local invItem = readQword(heroItemArr + 0x20 + ii * 8)
+              if invItem and invItem ~= 0 and readInteger(invItem + 0x14) == 0 then
+                local invEqd = readQword(invItem + 0x60)
+                if invEqd and invEqd ~= 0 then
+                  local invLv = readInteger(invItem + 0x3C) or 0
+                  if invLv &gt; bestLv then
+                    bestLv = invLv
+                    bestBaseAdd = readQword(invEqd + 0x20)
+                    bestExtraAdd = readQword(invEqd + 0x28)
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+
+      -- Copy stat pointers from best existing equipment (pure memory, no executeCodeEx)
+      if bestBaseAdd and bestBaseAdd ~= 0 then
+        writeQword(newEqd + 0x20, bestBaseAdd)
+        log("Copied baseAddData from lv " .. bestLv .. " equipment")
+      else
+        writeQword(newEqd + 0x20, readQword(templateEqd + 0x20) or 0)
+      end
+
+      if bestExtraAdd and bestExtraAdd ~= 0 then
+        writeQword(newEqd + 0x28, bestExtraAdd)
+      else
+        writeQword(newEqd + 0x28, readQword(templateEqd + 0x28) or 0)
+      end
+
+      writeQword(ni + 0x60, newEqd)
+    else
+      writeQword(ni + 0x60, templateEqd) -- fallback
+    end
+  end
+
+  local ok3, result = MT.hook.mainThreadGetItem(ni)
+  if not ok3 then return false, result end
+  return true, MT.hook.getItemName(ni)
+end
+
+function MT.items.addTreasure(typeIdx, rareLv, bossLv, timeout)
+  local S = MT.hook.S
+  if not S.ready or not S.cmdBuf then return false, "Connect first" end
+  timeout = timeout or 3000
+  bossLv = bossLv or 5
+  -- edx=typeIdx, r8d=rareLv, xmm3=bossLv (same pattern as GenerateWeapon)
+  writeInteger(S.cmdBuf + 0x10, typeIdx)
+  writeInteger(S.cmdBuf + 0x14, rareLv)
+  writeFloat(S.cmdBuf + 0x18, bossLv * 1.0)
+  writeQword(S.cmdBuf + 0x68, S.base + MT.hook.TREASURE_GEN_RVA)
+  writeInteger(S.cmdBuf + 0x04, 0)
+  writeInteger(S.cmdBuf, 4)
+  local elapsed = 0
+  while elapsed &lt; timeout do
+    local status = readInteger(S.cmdBuf + 0x04)
+    if status == 1 then
+      local newItem = readQword(S.cmdBuf + 0x08)
+      if not newItem or newItem == 0 then return false, "Generator returned null" end
+      local itemName = MT.hook.getItemName(newItem)
+      local ok2, _ = MT.hook.mainThreadGetItem(newItem)
+      if not ok2 then return false, "GetItem failed" end
+      return true, itemName
+    elseif status == 2 then
+      return false, "Generator failed"
+    end
+    sleep(16)
+    elapsed = elapsed + 16
+  end
+  return false, "Timeout"
+end
+
+-- src/06_heroes.lua — Hero generation functions (MT.heroes)
+-- ============================================================
+-- MT.heroes -- generate, generateNoFaction
+-- ============================================================
+MT.heroes = {}
+
+function MT.heroes.generate(forceID, heroForceLv, sexLimit, timeout)
+  local RVA = MT.hook.RVA
+  local cb = getAddress("cmdBuf")
+  if not cb or cb == 0 then return false, "cmdBuf not found" end
+  local base = getAddress("GameAssembly.dll")
+  if not base or base == 0 then return false, "GameAssembly not loaded" end
+  if not RVA.genHeroData9 then return false, "GenerateHeroData(9) not resolved" end
+  if not RVA.recruitHero then return false, "ManagePlayerRecruitHero not resolved" end
+  timeout = timeout or 5000
+
+  log(string.format("[GenHero] force=%d lv=%d sex=%d", forceID or 0, heroForceLv or 1, sexLimit or 0))
+  log(string.format("[GenHero] RVAs: genHero9=%X recruit=%X npcSkill=%X npcItem=%X",
+    RVA.genHeroData9, RVA.recruitHero, RVA.genNPCSkill or 0, RVA.genNPCItem or 0))
+  log(string.format("[GenHero] Addrs: genHero9=%X recruit=%X",
+    base + RVA.genHeroData9, base + RVA.recruitHero))
+
+  -- cmd=5: GenerateHeroData(9) + ManagePlayerRecruitHero
+  writeInteger(cb + 0x10, forceID or 0)
+  writeFloat(cb + 0x14, (heroForceLv or 5) * 1.0)
+  writeInteger(cb + 0x18, sexLimit or 0)
+  writeQword(cb + 0x68, base + RVA.genHeroData9)
+  writeQword(cb + 0x70, base + RVA.recruitHero)
+  writeQword(cb + 0x78, RVA.genNPCSkill and (base + RVA.genNPCSkill) or 0)
+  writeQword(cb + 0x80, RVA.genNPCItem and (base + RVA.genNPCItem) or 0)
+
+  log(string.format("[GenHero] cmdBuf: [+10]=%d [+14]=%.1f [+18]=%d",
+    readInteger(cb + 0x10), readFloat(cb + 0x14), readInteger(cb + 0x18)))
+  log(string.format("[GenHero] cmdBuf: [+68]=%X [+70]=%X [+78]=%X [+80]=%X",
+    readQword(cb + 0x68), readQword(cb + 0x70), readQword(cb + 0x78), readQword(cb + 0x80)))
+  log(string.format("[GenHero] gc=%X hero=%X", readQword(cb + 0x20) or 0, readQword(cb + 0x28) or 0))
+
+  writeInteger(cb + 0x04, 0)
+  writeInteger(cb, 5)
+  log("[GenHero] cmd=5 dispatched, waiting...")
+
+  local elapsed = 0
+  while elapsed &lt; timeout do
+    local status = readInteger(cb + 0x04)
+    if status == 1 then
+      local heroData = readQword(cb + 0x08)
+      log(string.format("[GenHero] SUCCESS! heroData=%X", heroData or 0))
+      return true, heroData
+    elseif status == 2 then
+      return false, "Generation failed"
+    end
+    sleep(16)
+    elapsed = elapsed + 16
+  end
+  return false, "Timeout"
+end
+
+function MT.heroes.generateNoFaction(heroForceLv, timeout)
+  local RVA = MT.hook.RVA
+  local cb = getAddress("cmdBuf")
+  if not cb or cb == 0 then return false, "cmdBuf not found" end
+  local base = getAddress("GameAssembly.dll")
+  if not RVA.worldAddHero then return false, "WorldAddNewHero not resolved" end
+  timeout = timeout or 5000
+
+  -- Use cmd=4 (doGenEquip) slot to call WorldAddNewHero
+  -- WorldAddNewHero(gc, forceID=-1, heroForceLv, outSideForce=false)
+  writeInteger(cb + 0x10, -1)
+  writeInteger(cb + 0x14, heroForceLv or 1)
+  writeFloat(cb + 0x18, 0)
+  writeQword(cb + 0x68, base + RVA.worldAddHero)
+
+  writeInteger(cb + 0x04, 0)
+  writeInteger(cb, 4)
+
+  local elapsed = 0
+  while elapsed &lt; timeout do
+    local status = readInteger(cb + 0x04)
+    if status == 1 then
+      local heroData = readQword(cb + 0x08)
+      return true, heroData
+    elseif status == 2 then return false, "Failed"
+    end
+    sleep(16); elapsed = elapsed + 16
+  end
+  return false, "Timeout"
+end
+
+-- src/07_events.lua — Event spawning (MT.events)
+-- ============================================================
+-- MT.events -- spawn
+-- ============================================================
+MT.events = {}
+
+function MT.events.spawn(templateIdx, difficulty, timeout)
+  local S = MT.hook.S
+  if not S.ready or not S.cmdBuf then return false, "Connect first" end
+  timeout = timeout or 5000
+  local cb = S.cmdBuf
+
+  -- Find WorldEventController
+  local c = _il2cppCache
+  if not c then return false, "il2cpp not ready" end
+  local wecClass = c.findClass("WorldEventController")
+  if not wecClass then return false, "WEC class not found" end
+  local sf = readQword(wecClass + 0xB8)
+  if not sf or sf == 0 then return false, "WEC static=0" end
+  local wecInst = readQword(sf)
+  if not wecInst or wecInst == 0 then return false, "WEC instance=0" end
+  local dbList = readQword(wecInst + 0x18)
+  if not dbList or dbList == 0 then return false, "DB list=0" end
+  local dbCount = readInteger(dbList + 0x18)
+  if templateIdx &gt;= dbCount then return false, "Index out of range" end
+  local items = readQword(dbList + 0x10)
+  local template = readQword(items + 0x20 + templateIdx * 8)
+  if not template or template == 0 then return false, "Template null" end
+
+  local nameObj = readQword(template + 0x10)
+  local evtName = ""
+  if nameObj and nameObj ~= 0 then
+    local nl = readInteger(nameObj + 0x10)
+    if nl and nl &gt; 0 and nl &lt; 30 then evtName = readString(nameObj + 0x14, nl*2, true) or "" end
+  end
+
+  -- Step 1: Call 2-param CreateWorldEvent to handle area selection + clone + registration
+  if not S.createWorldEventMI then
+    local getMeth = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+    local wecKlass = readQword(wecInst)
+    local strBuf = allocateMemory(64)
+    writeString(strBuf, "CreateWorldEvent")
+    S.createWorldEventMI = executeCodeEx(0, nil, getMeth, wecKlass, strBuf, 1)
+    deAlloc(strBuf)
+    if not S.createWorldEventMI or S.createWorldEventMI == 0 then
+      S.createWorldEventMI = nil
+      return false, "CreateWorldEvent MI not found"
+    end
+    log(string.format("[SpawnEvent] CreateWorldEvent MI=%X", S.createWorldEventMI))
+  end
+
+  local riAddr = getAddress("GameAssembly.il2cpp_runtime_invoke")
+  if not riAddr or riAddr == 0 then return false, "runtime_invoke not found" end
+
+  -- Count events before spawn to find the new one after
+  local gcC = MT.il2cpp.init()
+  local gcInst = readQword(gcC.gc.static + gcC.gc.instOff)
+  local worldData = gcInst and readQword(gcInst + 0x20) or 0
+  local eventList = worldData ~= 0 and readQword(worldData + 0x80) or 0
+  local countBefore = eventList ~= 0 and readInteger(eventList + 0x18) or 0
+
+  -- Set difficultyRate on template so the game creates the icon with correct color
+  -- Then override +0x64 after creation for exact difficulty
+  local origRate = 0
+  local rateObj = readQword(template + 0x50)
+  if difficulty and difficulty &gt; 0 and rateObj and rateObj ~= 0 then
+    origRate = readFloat(rateObj + 0x68)
+    writeFloat(rateObj + 0x68, difficulty * 1.0)
+  end
+
+  writeQword(cb + 0xA0, template)
+  writeQword(cb + 0x90, S.createWorldEventMI)
+  writeQword(cb + 0x88, wecInst)
+  writeQword(cb + 0x68, riAddr)
+  writeInteger(cb + 0x04, 0)
+  writeInteger(cb, 8)
+  local elapsed = 0
+  while elapsed &lt; timeout do
+    local st = readInteger(cb + 0x04)
+    if st and st ~= 0 then break end
+    sleep(16); elapsed = elapsed + 16
+  end
+
+  -- Restore original difficultyRate
+  if difficulty and difficulty &gt; 0 and rateObj and rateObj ~= 0 then
+    writeFloat(rateObj + 0x68, origRate)
+  end
+
+  local finalStatus = readInteger(cb + 0x04)
+  if not finalStatus or finalStatus ~= 1 then return false, "CreateWorldEvent failed (status=" .. tostring(finalStatus) .. ")" end
+
+  -- Override +0x64 to exact desired difficulty (difficultyRate * random gave approximate value)
+  if difficulty and difficulty &gt; 0 then
+    eventList = readQword(worldData + 0x80)
+    local countAfter = eventList ~= 0 and readInteger(eventList + 0x18) or 0
+    if countAfter &gt; countBefore then
+      local evtItems = readQword(eventList + 0x10)
+      local newEvt = readQword(evtItems + 0x20 + (countAfter - 1) * 8)
+      if newEvt and newEvt ~= 0 then
+        writeFloat(newEvt + 0x64, difficulty * 1.0)
+      end
+    end
+  end
+
+  return true, evtName
+end
+
+-- src/08_ui.lua — UI helper functions (MT.ui)
+-- ============================================================
+-- MT.ui -- UI helper functions
+-- ============================================================
+MT.ui = {}
+
+-- Table of thread-gated controls: each entry = {panel=, btn=, edit=nil}
+_threadGatedControls = {}
+
+--- Wrap a callback in pcall for safe button clicks
+function MT.ui.safeClick(fn)
+  return function(...)
+    local ok, err = pcall(fn, ...)
+    if not ok then
+      print("[MT] Error: " .. tostring(err))
+    end
+    return ok, err
+  end
+end
+
+--- Update the status bar label
+function MT.ui.setStatus(msg, color)
+  if _mtStatusLbl then
+    if msg then
+      -- Strip CE's internal script prefix: [string "local syntaxcheck,memrec=..."]:NNN:
+      msg = msg:gsub('%[string "local syntaxcheck,memrec=.-"%]:%d+:%s*', '')
+      -- Also strip other CE prefixes
+      msg = msg:gsub('%[string ".-"%]:%d+:%s*', '')
+    end
+    _mtStatusLbl.Caption = msg or ""
+    _mtStatusLbl.Font.Color = color or 0x000000
+  end
+end
+
+--- Check whether the command buffer symbol exists and the hook is enabled
+function MT.ui.isConnected()
+  local ok, addr = pcall(getAddress, "cmdBuf")
+  if not ok or not addr or addr == 0 then return false end
+  -- Check the enable flag at offset 0x38
+  local flag = readInteger(addr + 0x38)
+  return flag and flag ~= 0
+end
+
+--- Green flash on success -- reverts after 1.2 s
+function MT.ui.flashSuccess(panel, btn, origCaption, msg)
+  panel.Color = 0x88FF88   -- light green BGR
+  btn.Caption = "Done OK!"
+  MT.ui.setStatus(msg, 0x008000)
+  local t = createTimer(nil)
+  t.Interval = 1200
+  t.OnTimer = function(sender)
+    t.Enabled = false; t.destroy()
+    if not _itemAdderForm then return end
+    pcall(function() if _itemAdderForm.Visible then panel.Color = 0xE0E0E0; btn.Caption = origCaption end end)
+  end
+  t.Enabled = true
+end
+
+--- Red flash on failure -- reverts after 1.5 s
+function MT.ui.flashFail(panel, btn, origCaption, msg)
+  panel.Color = 0x4444FF   -- light red in BGR
+  btn.Caption = "FAIL"
+  MT.ui.setStatus(msg, 0x0000FF)
+  local t = createTimer(nil)
+  t.Interval = 1500
+  t.OnTimer = function(sender)
+    t.Enabled = false; t.destroy()
+    if not _itemAdderForm then return end
+    pcall(function() if _itemAdderForm.Visible then panel.Color = 0xE0E0E0; btn.Caption = origCaption end end)
+  end
+  t.Enabled = true
+end
+
+--- Apply numeric-only filter to an Edit control (digits, minus, dot, backspace)
+function MT.ui.numericOnly(edt)
+  edt.OnKeyPress = function(sender, key)
+    if key == "\b" then return key end
+    if key == "-" or key == "." or (key &gt;= "0" and key &lt;= "9") then return key end
+    return ""
+  end
+end
+
+--- Create a one-off action button (Panel + Button)
+function MT.ui.makeOneOff(parent, x, y, w, h, caption, callback, needsThread)
+  local pnl = createPanel(parent)
+  pnl.Left = x; pnl.Top = y; pnl.Width = w; pnl.Height = h
+  pnl.BevelOuter = 1
+  pnl.Color = 0xE0E0E0
+  pnl.Caption = ""
+
+  local b = createButton(pnl)
+  b.Left = 2; b.Top = 2; b.Width = w - 4; b.Height = h - 4
+  b.Caption = caption
+  b.Font.Size = 9
+
+  if needsThread then
+    b.Enabled = false
+    pnl.Color = 0xC0C0C0
+    table.insert(_threadGatedControls, {panel = pnl, btn = b})
+  end
+
+  b.OnClick = MT.ui.safeClick(function(sender)
+    local cap = caption
+    local ok, msg = pcall(callback)
+    if ok and msg then
+      if msg == false then
+        MT.ui.flashFail(pnl, b, cap, "Action failed")
+      elseif type(msg) == "string" then
+        MT.ui.flashSuccess(pnl, b, cap, msg)
+      else
+        MT.ui.flashSuccess(pnl, b, cap, cap .. " done")
+      end
+    elseif not ok then
+      MT.ui.flashFail(pnl, b, cap, tostring(msg))
+    else
+      MT.ui.flashSuccess(pnl, b, cap, cap .. " done")
+    end
+  end)
+
+  return pnl, b
+end
+
+--- Create a toggle button (Panel + Button, ON/OFF state)
+function MT.ui.makeToggle(parent, x, y, w, h, caption, enableFn, disableFn, needsThread)
+  local pnl = createPanel(parent)
+  pnl.Left = x; pnl.Top = y; pnl.Width = w; pnl.Height = h
+  pnl.BevelOuter = 1
+  pnl.Color = 0xE0E0E0
+  pnl.Caption = ""
+
+  local b = createButton(pnl)
+  b.Left = 2; b.Top = 2; b.Width = w - 4; b.Height = h - 4
+  b.Caption = caption
+  b.Font.Size = 9
+
+  local isOn = false
+
+  if needsThread then
+    b.Enabled = false
+    pnl.Color = 0xC0C0C0
+    table.insert(_threadGatedControls, {panel = pnl, btn = b})
+  end
+
+  b.OnClick = MT.ui.safeClick(function(sender)
+    if not isOn then
+      local ok, err = pcall(enableFn)
+      if ok then
+        isOn = true
+        pnl.Color = 0x4444FF   -- red-ish BGR = toggle ON
+        b.Caption = caption .. " [ON]"
+        MT.ui.setStatus(caption .. " enabled", 0x008000)
+      else
+        MT.ui.flashFail(pnl, b, caption, tostring(err))
+      end
+    else
+      local ok, err = pcall(disableFn)
+      if ok then
+        isOn = false
+        pnl.Color = 0xE0E0E0
+        b.Caption = caption
+        MT.ui.setStatus(caption .. " disabled", 0x808080)
+      else
+        MT.ui.flashFail(pnl, b, caption .. " [ON]", tostring(err))
+      end
+    end
+  end)
+
+  return pnl, b
+end
+
+--- Create an input field with button (Panel + Edit + Button)
+function MT.ui.makeInput(parent, x, y, w, h, caption, editW, default, callback, needsThread)
+  local pnl = createPanel(parent)
+  pnl.Left = x; pnl.Top = y; pnl.Width = w; pnl.Height = h
+  pnl.BevelOuter = 1
+  pnl.Color = 0xE0E0E0
+  pnl.Caption = ""
+
+  local edt = createEdit(pnl)
+  edt.Left = 4; edt.Top = 4; edt.Width = editW; edt.Height = h - 8
+  edt.Text = default or ""
+  edt.Font.Size = 9
+  MT.ui.numericOnly(edt)
+
+  local btnW = w - editW - 10
+  local b = createButton(pnl)
+  b.Left = editW + 6; b.Top = 2; b.Width = btnW; b.Height = h - 4
+  b.Caption = caption
+  b.Font.Size = 9
+
+  if needsThread then
+    b.Enabled = false
+    edt.Enabled = false
+    pnl.Color = 0xC0C0C0
+    table.insert(_threadGatedControls, {panel = pnl, btn = b, edit = edt})
+  end
+
+  b.OnClick = MT.ui.safeClick(function(sender)
+    local cap = caption
+    local val = edt.Text
+    local ok, msg = pcall(callback, val)
+    if ok and msg then
+      if msg == false then
+        MT.ui.flashFail(pnl, b, cap, "Action failed")
+      elseif type(msg) == "string" then
+        MT.ui.flashSuccess(pnl, b, cap, msg)
+      else
+        MT.ui.flashSuccess(pnl, b, cap, cap .. " done")
+      end
+    elseif not ok then
+      MT.ui.flashFail(pnl, b, cap, tostring(msg))
+    else
+      MT.ui.flashSuccess(pnl, b, cap, cap .. " done")
+    end
+  end)
+
+  return pnl, b, edt
+end
+
+--- Create a toggle button with an editable multiplier value (Panel + Edit + Button)
+function MT.ui.makeToggleInput(parent, x, y, w, h, caption, editW, default, enableFn, disableFn, needsThread)
+  local pnl = createPanel(parent)
+  pnl.Left = x; pnl.Top = y; pnl.Width = w; pnl.Height = h
+  pnl.BevelOuter = 1
+  pnl.Color = 0xE0E0E0
+  pnl.Caption = ""
+
+  local edt = createEdit(pnl)
+  edt.Left = 4; edt.Top = 4; edt.Width = editW; edt.Height = h - 8
+  edt.Text = default or ""
+  edt.Font.Size = 9
+  MT.ui.numericOnly(edt)
+
+  local btnW = w - editW - 10
+  local b = createButton(pnl)
+  b.Left = editW + 6; b.Top = 2; b.Width = btnW; b.Height = h - 4
+  b.Caption = caption
+  b.Font.Size = 9
+
+  local isOn = false
+
+  if needsThread then
+    b.Enabled = false
+    edt.Enabled = false
+    pnl.Color = 0xC0C0C0
+    table.insert(_threadGatedControls, {panel = pnl, btn = b, edit = edt})
+  end
+
+  b.OnClick = MT.ui.safeClick(function(sender)
+    if not isOn then
+      local multiplier = tonumber(edt.Text) or tonumber(default) or 1
+      local ok, err = pcall(enableFn, multiplier)
+      if ok then
+        isOn = true
+        pnl.Color = 0x4444FF
+        b.Caption = caption .. " [ON]"
+        edt.Enabled = false
+        MT.ui.setStatus(caption .. " enabled (x" .. tostring(multiplier) .. ")", 0x008000)
+      else
+        MT.ui.flashFail(pnl, b, caption, tostring(err))
+      end
+    else
+      local ok, err = pcall(disableFn)
+      if ok then
+        isOn = false
+        pnl.Color = 0xE0E0E0
+        b.Caption = caption
+        edt.Enabled = true
+        MT.ui.setStatus(caption .. " disabled", 0x808080)
+      else
+        MT.ui.flashFail(pnl, b, caption .. " [ON]", tostring(err))
+      end
+    end
+  end)
+
+  return pnl, b, edt
+end
+
+--- Enable all thread-gated controls (called after successful connect)
+function MT.ui.enableThreadControls()
+  for _, entry in ipairs(_threadGatedControls) do
+    if entry.btn then entry.btn.Enabled = true end
+    if entry.edit then entry.edit.Enabled = true end
+    if entry.panel then entry.panel.Color = 0xE0E0E0 end
+  end
+end
+
+-- src/09_data.lua — Data loading and treasure type definitions (MT.data)
+-- ============================================================
+-- MT.data -- Databases for dropdowns (used by form code)
+-- ============================================================
+MT.data = {}
+
+-- Load a pipe-delimited data file from embedded table files.
+-- Returns a list of tables, each with fields split by "|".
+-- First field is always converted to number (the ID).
+function MT.data.loadFile(filename)
+  local content = nil
+  -- 1. Check CT's directory (companion data files shipped alongside CT)
+  pcall(function()
+    local ctPath = getOpenedFile()
+    if ctPath and #ctPath &gt; 0 then
+      local dir = ctPath:match("(.*[/\\])")
+      if dir then
+        local f = io.open(dir .. filename, "r")
+        if f then content = f:read("*a"); f:close() end
+      end
+    end
+  end)
+  -- 2. Fall back to CE embedded table files (small files in Files section)
+  if not content then
+    local tf = findTableFile(filename)
+    if tf then
+      local tmpPath = getTempFolder() .. filename
+      tf.saveToFile(tmpPath)
+      local f = io.open(tmpPath, "r")
+      if f then content = f:read("*a"); f:close() end
+    end
+  end
+  if not content then
+    print("[MT.data] File not found: " .. filename)
+    return {}
+  end
+  local items = {}
+  for line in content:gmatch("[^\r\n]+") do
+    line = line:match("^%s*(.-)%s*$")  -- trim
+    if line and #line &gt; 0 then
+      local parts = {}
+      -- Split by | preserving empty fields (gmatch("[^|]+") skips empties)
+      local pos = 1
+      while true do
+        local pipePos = line:find("|", pos, true)
+        if pipePos then
+          table.insert(parts, line:sub(pos, pipePos - 1))
+          pos = pipePos + 1
+        else
+          table.insert(parts, line:sub(pos))
+          break
+        end
+      end
+      if #parts &gt;= 2 then
+        parts[1] = tonumber(parts[1]) or parts[1]
+        table.insert(items, parts)
+      end
+    end
+  end
+  return items
+end
+
+-- Convert loaded data to {id, "display name"} format for dropdown compatibility
+function MT.data.toDropdown(data, nameCols)
+  local result = {}
+  for _, row in ipairs(data) do
+    local id = row[1]
+    local parts = {}
+    for _, col in ipairs(nameCols or {2}) do
+      if row[col] then table.insert(parts, row[col]) end
+    end
+    table.insert(result, {id, table.concat(parts, " ")})
+  end
+  return result
+end
+
+-- Lazy-loaded databases (populated on first access)
+MT.data._cache = {}
+function MT.data.get(name)
+  if MT.data._cache[name] then return MT.data._cache[name] end
+  local loaders = {
+    skillDB  = function() return MT.data.toDropdown(MT.data.loadFile("skills.dat"), {2, 3}) end,
+    medDB    = function() return MT.data.toDropdown(MT.data.loadFile("medicine.dat"), {2, 3, 4}) end,
+    foodDB   = function() return MT.data.toDropdown(MT.data.loadFile("food.dat"), {2, 3, 4}) end,
+    horseDB  = function() return MT.data.toDropdown(MT.data.loadFile("horses.dat"), {2}) end,
+    matDB    = function() return MT.data.toDropdown(MT.data.loadFile("materials.dat"), {2, 3}) end,
+  }
+  if loaders[name] then
+    MT.data._cache[name] = loaders[name]()
+    return MT.data._cache[name]
+  end
+  return nil
+end
+
+-- Load stat names from GameDataController.speAddDataBase (215 entries)
+-- Returns table: statNames[id] = "name"
+function MT.data.loadStatNames()
+  if MT.data._statNames then return MT.data._statNames end
+  local c = MT.il2cpp.init()
+  if not c.gdc then c:ensure("gdc", "GameDataController", 0x20) end
+  local gdcInst = readQword(c.gdc.static + c.gdc.instOff)
+  if not gdcInst or gdcInst == 0 then return {} end
+  local speDB = readQword(gdcInst + 0x90)
+  if not speDB or speDB == 0 then return {} end
+  local speItems = readQword(speDB + 0x10)
+  local speCount = readInteger(speDB + 0x18)
+  local names = {}
+  for i = 0, speCount - 1 do
+    local spe = readQword(speItems + 0x20 + i * 8)
+    if spe and spe ~= 0 then
+      local np = readQword(spe + 0x10)
+      if np and np ~= 0 then
+        local nl = readInteger(np + 0x10)
+        names[i] = readString(np + 0x14, nl * 2, true)
+      end
+    end
+  end
+  MT.data._statNames = names
+  return names
+end
+
+-- Read a HeroSpeAddData dictionary (Dictionary&lt;int,float&gt; at obj+0x10)
+-- Returns string and numeric total. showPct=true formats values as percentages.
+-- IL2CPP Dict layout: count at dict+0x20, entries array at dict+0x18,
+-- each entry 16 bytes at entries+0x20: hashCode(4) next(4) key(4) value(4)
+function MT.data.readSpeDict(ptr, showPct)
+  if not ptr or ptr == 0 then return "", 0 end
+  local dict = readQword(ptr + 0x10)
+  if not dict or dict == 0 then return "", 0 end
+  local cnt = readInteger(dict + 0x20)
+  if not cnt or cnt &lt;= 0 then return "", 0 end
+  local entries = readQword(dict + 0x18)
+  if not entries or entries == 0 then return "", 0 end
+  local statNames = MT.data.loadStatNames()
+  local speDB = MT.data._speAddDB  -- for showPercent lookup
+  local parts = {}
+  local total = 0
+  for i = 0, cnt - 1 do
+    local base = entries + 0x20 + i * 16
+    local key = readInteger(base + 8)
+    local val = readFloat(base + 12)
+    if statNames[key] then
+      total = total + math.abs(val)
+      local isPct = false
+      if speDB and speDB[key] then isPct = speDB[key].showPct end
+      local sign = val &gt;= 0 and "+" or ""
+      if isPct or showPct then
+        parts[#parts + 1] = statNames[key] .. sign .. string.format("%.0f%%", val * 100)
+      else
+        parts[#parts + 1] = statNames[key] .. sign .. string.format("%.0f", val)
+      end
+    end
+  end
+  return table.concat(parts, ", "), total
+end
+
+-- Load speAddDataBase with showPercent flags (for use effect formatting)
+function MT.data.loadSpeAddDB()
+  if MT.data._speAddDB then return MT.data._speAddDB end
+  local c = MT.il2cpp.init()
+  if not c.gdc then c:ensure("gdc", "GameDataController", 0x20) end
+  local gdcInst = readQword(c.gdc.static + c.gdc.instOff)
+  if not gdcInst or gdcInst == 0 then return {} end
+  local speDB = readQword(gdcInst + 0x90)
+  if not speDB or speDB == 0 then return {} end
+  local speItems = readQword(speDB + 0x10)
+  local speCount = readInteger(speDB + 0x18)
+  local db = {}
+  for i = 0, speCount - 1 do
+    local spe = readQword(speItems + 0x20 + i * 8)
+    if spe and spe ~= 0 then
+      db[i] = { showPct = readBytes(spe + 0x38, 1) == 1 }
+    end
+  end
+  MT.data._speAddDB = db
+  return db
+end
+
+-- Read addDamageRatio (AttriNumData at skill+0x48) as formatted text
+-- attri: 力道,灵巧,智力,意志,体质,经脉 | fightSkill: 内功-射术 | Hp,Power,Mana
+function MT.data.readDmgBonus(sk)
+  local addDmg = readQword(sk + 0x48)
+  if not addDmg or addDmg == 0 then return "" end
+  local attriNames = {"力道","灵巧","智力","意志","体质","经脉"}
+  local fightNames = {"内功","轻功","绝技","拳掌","剑法","刀法","长兵","奇门","射术"}
+  local parts = {}
+  local attriList = readQword(addDmg + 0x10)
+  if attriList and attriList ~= 0 then
+    local ac = readInteger(attriList + 0x18) or 0
+    local ai = readQword(attriList + 0x10)
+    if ai and ai ~= 0 then
+      for i = 0, math.min(ac - 1, 5) do
+        local v = readFloat(ai + 0x20 + i * 4)
+        if v ~= 0 then parts[#parts + 1] = attriNames[i + 1] .. string.format(v &lt; 1 and "%.1f" or "%.0f", v) end
+      end
+    end
+  end
+  local fightList = readQword(addDmg + 0x18)
+  if fightList and fightList ~= 0 then
+    local fc = readInteger(fightList + 0x18) or 0
+    local fi = readQword(fightList + 0x10)
+    if fi and fi ~= 0 then
+      for i = 0, math.min(fc - 1, 8) do
+        local v = readFloat(fi + 0x20 + i * 4)
+        if v ~= 0 then parts[#parts + 1] = fightNames[i + 1] .. string.format(v &lt; 1 and "%.1f" or "%.0f", v) end
+      end
+    end
+  end
+  local hp = readFloat(addDmg + 0x28)
+  local pw = readFloat(addDmg + 0x2C)
+  local mn = readFloat(addDmg + 0x30)
+  if hp ~= 0 then parts[#parts + 1] = "生命" .. string.format(hp &lt; 1 and "%.1f" or "%.0f", hp) end
+  if pw ~= 0 then parts[#parts + 1] = "体力" .. string.format(pw &lt; 1 and "%.1f" or "%.0f", pw) end
+  if mn ~= 0 then parts[#parts + 1] = "内力" .. string.format(mn &lt; 1 and "%.1f" or "%.0f", mn) end
+  return table.concat(parts, ",")
+end
+
+-- Load all 996 skills from GameDataController.kungfuSkillDataBase
+-- Returns list of skill tables with all fields
+function MT.data.loadLiveSkills()
+  if MT.data._liveSkills then return MT.data._liveSkills end
+  local c = MT.il2cpp.init()
+  if not c.gdc then c:ensure("gdc", "GameDataController", 0x20) end
+  local gdcInst = readQword(c.gdc.static + c.gdc.instOff)
+  if not gdcInst or gdcInst == 0 then return nil end
+  local skillDB = readQword(gdcInst + 0x128)
+  if not skillDB or skillDB == 0 then return nil end
+  local skillItems = readQword(skillDB + 0x10)
+  local skillCount = readInteger(skillDB + 0x18)
+  if not skillItems or skillCount &lt;= 0 then return nil end
+
+  local typeNames = {"内功","轻功","绝技","拳掌","剑法","刀法","长兵","奇门","射术"}
+  local rareNames = {"基础","进阶","上乘","秘传","顶极","绝世"}
+
+  local function readStr(ptr)
+    if not ptr or ptr == 0 then return "" end
+    local nl = readInteger(ptr + 0x10)
+    if not nl or nl &lt;= 0 then return "" end
+    return readString(ptr + 0x14, math.min(nl, 200) * 2, true) or ""
+  end
+
+  local function readAtkRange(sk)
+    local atkList = readQword(sk + 0x70)
+    if not atkList or atkList == 0 then return "" end
+    local ac = readInteger(atkList + 0x18)
+    if not ac or ac &lt;= 0 then return "" end
+    local ai = readQword(atkList + 0x10)
+    local ar = readQword(ai + 0x20)
+    if not ar or ar == 0 then return "" end
+    return readInteger(ar + 0x14) .. "-" .. readInteger(ar + 0x18)
+  end
+
+  local function readSpeEffects(sk)
+    local speList = readQword(sk + 0xB0)
+    if not speList or speList == 0 then return "" end
+    local sc = readInteger(speList + 0x18)
+    if not sc or sc &lt;= 0 then return "" end
+    local si = readQword(speList + 0x10)
+    local names = {}
+    for j = 0, math.min(sc - 1, 8) do
+      local se = readQword(si + 0x20 + j * 8)
+      if se and se ~= 0 then
+        names[#names + 1] = readStr(readQword(se + 0x10))
+      end
+    end
+    return table.concat(names, ", ")
+  end
+
+  local function readPosture(ptr)
+    if not ptr or ptr == 0 then return {} end
+    local pl = readQword(ptr + 0x10)
+    if not pl or pl == 0 then return {} end
+    local cnt = readInteger(pl + 0x18)
+    local pi = readQword(pl + 0x10)
+    local vals = {}
+    for i = 0, math.min((cnt or 0) - 1, 5) do
+      vals[i + 1] = readFloat(pi + 0x20 + i * 4)
+    end
+    return vals
+  end
+
+  local skills = {}
+  for i = 0, skillCount - 1 do
+    local sk = readQword(skillItems + 0x20 + i * 8)
+    if sk and sk ~= 0 then
+      local hide = readBytes(sk + 0xC8, 1)
+      if hide ~= 1 then
+        local skillType = readInteger(sk + 0x30)
+        local rareLv = readInteger(sk + 0x34)
+        local manaCost = readFloat(sk + 0x38)
+        local baseDmg = readFloat(sk + 0x3C)
+        local addDmg = readQword(sk + 0x48)
+        skills[#skills + 1] = {
+          id = readInteger(sk + 0x14),
+          forceID = readInteger(sk + 0x18),
+          name = readStr(readQword(sk + 0x20)),
+          desc = readStr(readQword(sk + 0x28)),
+          type = skillType,
+          typeName = typeNames[skillType + 1] or "?",
+          rareLv = rareLv,
+          rareName = rareNames[rareLv + 1] or tostring(rareLv),
+          manaCost = manaCost,
+          baseDmg = baseDmg,
+          expRatio = readFloat(sk + 0x40),
+          atkRange = readAtkRange(sk),
+          upgrade = "", upgradeTotal = 0, equip = "", use = "",
+          effects = readSpeEffects(sk),
+          weapon = readStr(readQword(sk + 0x98)),
+          maxUse = readInteger(sk + 0x84),
+          atkPosture = readPosture(readQword(sk + 0x88)),
+          defPosture = readPosture(readQword(sk + 0x90)),
+          dmgBonus = MT.data.readDmgBonus(sk),
+        }
+        local s = skills[#skills]
+        s.upgrade, s.upgradeTotal = MT.data.readSpeDict(readQword(sk + 0x58))
+        s.equip = MT.data.readSpeDict(readQword(sk + 0x60))
+        s.use = MT.data.readSpeDict(readQword(sk + 0x68), true)
+      end
+    end
+  end
+  MT.data._liveSkills = skills
+  return skills
+end
+
+-- Load force/sect names from WorldData
+function MT.data.loadForceNames()
+  if MT.data._forceNames then return MT.data._forceNames end
+  local wd = MT.game.getWorldData()
+  if not wd then return {} end
+  local forces = readQword(wd + 0x48)
+  if not forces or forces == 0 then return {} end
+  local fItems = readQword(forces + 0x10)
+  local fCount = readInteger(forces + 0x18)
+  local names = {}
+  for i = 0, fCount - 1 do
+    local fd = readQword(fItems + 0x20 + i * 8)
+    if fd and fd ~= 0 then
+      local forceID = readInteger(fd + 0x10)
+      local np = readQword(fd + 0x18)  -- forceName at +0x18
+      if np and np ~= 0 then
+        local nl = readInteger(np + 0x10)
+        if nl and nl &gt; 0 then
+          names[forceID] = readString(np + 0x14, nl * 2, true) or ""
+        end
+      end
+    end
+  end
+  names[0xFFFFFFFF] = "通用"
+  names[4294967295] = "通用"  -- same as 0xFFFFFFFF in Lua number
+  MT.data._forceNames = names
+  return names
+end
+
+-- Load full skill database from embedded skills_full.dat
+-- Returns list of skill tables matching the live format
+-- Parse effect text fields into lookup dicts for dynamic column sorting
+function MT.data._parseSkillEffects(skills)
+  local function parseEffects(text)
+    local dict = {}
+    if not text or text == "" then return dict end
+    for part in text:gmatch("[^,]+") do
+      part = part:match("^%s*(.-)%s*$")
+      -- Try "name+val%" or "name+val" first (upgrade/equip/use format)
+      local name, val = part:match("^(.-)([+-]%d+%%?)$")
+      if not name or not val then
+        -- Try "nameVal" without sign (dmgBonus format like "内力0.2")
+        name, val = part:match("^(.-)(%d+%.?%d*)$")
+      end
+      if name and val then
+        name = name:match("^%s*(.-)%s*$")
+        local numVal = tonumber((val:gsub("%%", ""))) or 0
+        if #name &gt; 0 then dict[name] = numVal end
+      end
+    end
+    return dict
+  end
+  MT.data._allStatNames = {}
+  for _, sk in ipairs(skills) do
+    sk._upg = parseEffects(sk.upgrade)
+    sk._eqp = parseEffects(sk.equip)
+    sk._use = parseEffects(sk.use)
+    sk._dmg = parseEffects(sk.dmgBonus)
+    for n in pairs(sk._upg) do MT.data._allStatNames[n] = true end
+    for n in pairs(sk._eqp) do MT.data._allStatNames[n] = true end
+    for n in pairs(sk._use) do MT.data._allStatNames[n] = true end
+    for n in pairs(sk._dmg) do MT.data._allStatNames["伤害:" .. n] = true end
+  end
+end
+
+function MT.data.loadSkillsFull()
+  if MT.data._skillsFull then return MT.data._skillsFull end
+  -- Load pre-compiled Lua table (faster than pipe-delimited parsing)
+  local content = nil
+  pcall(function()
+    local ctPath = getOpenedFile()
+    if ctPath and #ctPath &gt; 0 then
+      local dir = ctPath:match("(.*[/\\])")
+      if dir then
+        local f = io.open(dir .. "skills_full.lua", "r")
+        if f then content = f:read("*a"); f:close() end
+      end
+    end
+  end)
+  if not content then
+    local tf = findTableFile("skills_full.lua")
+    if tf then
+      local tmp = getTempFolder() .. "skills_full.lua"
+      tf.saveToFile(tmp)
+      local f = io.open(tmp, "r")
+      if f then content = f:read("*a"); f:close() end
+    end
+  end
+  if content then
+    local fn = load(content)
+    if fn then
+      local skills = fn()
+      -- Parse effect text into dicts (needed for dynamic column sorting)
+      MT.data._parseSkillEffects(skills)
+      MT.data._skillsFull = skills
+      return skills
+    end
+  end
+  -- Fallback: pipe-delimited .dat format
+  local raw = MT.data.loadFile("skills_full.dat")
+  if not raw or #raw == 0 then return nil end
+  local skills = {}
+  local function parsePosture(s)
+    if not s or s == "" then return {} end
+    local vals = {}
+    for v in s:gmatch("[^,]+") do vals[#vals+1] = tonumber(v) or 0 end
+    return vals
+  end
+  for _, row in ipairs(raw) do
+    skills[#skills+1] = {
+      id = tonumber(row[1]) or 0, name = row[2] or "",
+      type = tonumber(row[3]) or 0, typeName = row[4] or "",
+      rareLv = tonumber(row[5]) or 0, rareName = row[6] or "",
+      forceID = tonumber(row[7]) or 4294967295, forceName = row[8] or "通用",
+      manaCost = tonumber(row[9]) or 0, baseDmg = tonumber(row[10]) or 0,
+      atkRange = row[11] or "", upgrade = row[12] or "",
+      upgradeTotal = tonumber(row[13]) or 0, equip = row[14] or "",
+      use = row[15] or "", effects = row[16] or "",
+      atkPosture = parsePosture(row[17]), defPosture = parsePosture(row[18]),
+      weapon = row[19] or "", maxUse = tonumber(row[20]) or 0,
+      dmgBonus = row[21] or "", desc = row[22] or "",
+    }
+  end
+  MT.data._parseSkillEffects(skills)
+  MT.data._skillsFull = skills
+  return skills
+end
+
+-- Load force names from embedded forces.dat
+function MT.data.loadForcesDat()
+  if MT.data._forcesDat then return MT.data._forcesDat end
+  local raw = MT.data.loadFile("forces.dat")
+  if not raw or #raw == 0 then return {} end
+  local names = {}
+  for _, row in ipairs(raw) do
+    names[tonumber(row[1]) or 0] = row[2] or ""
+  end
+  MT.data._forcesDat = names
+  return names
+end
+
+-- Treasure types (small enough to keep inline)
+MT.data.treasureTypes = {
+  "乐器 Instrument","棋谱 Chess Manual","字帖 Calligraphy","画本 Painting","香炉 Incense Burner",
+  "服饰 Clothing","珠玉 Jewel","酒器 Wine Vessel","史书 History Book","典籍 Classic Text",
+}
+
+-- src/10_cache.lua — RVA/AOB cache and user config persistence (MT.cache, MT.config)
+-- ============================================================
+-- MT.cache -- RVA/AOB cache (persisted to %APPDATA%)
+-- ============================================================
+MT.cache = {}
+MT.cache._dir = nil
+
+function MT.cache.getDir()
+  if MT.cache._dir then return MT.cache._dir end
+  local appdata = os.getenv("APPDATA")
+  if not appdata then return nil end
+  local dir = appdata .. "\\longyin-cheats"
+  -- NEVER use os.execute here — spawning cmd.exe freezes CE's GUI thread for seconds.
+  -- Try writing a test file; if dir doesn't exist, cache/config simply won't persist
+  -- until the user runs the game once (crash_recovery.ps1 creates the dir).
+  local testFile = io.open(dir .. "\\.dircheck", "w")
+  if testFile then
+    testFile:close()
+    os.remove(dir .. "\\.dircheck")
+  else
+    return nil  -- dir doesn't exist, skip caching
+  end
+  MT.cache._dir = dir
+  return dir
+end
+
+function MT.cache.getPath(gaSize)
+  local dir = MT.cache.getDir()
+  if not dir then return nil end
+  return dir .. "\\" .. tostring(gaSize) .. ".cache"
+end
+
+function MT.cache.load(gaSize)
+  local path = MT.cache.getPath(gaSize)
+  if not path then return nil end
+  local f = io.open(path, "r")
+  if not f then return nil end
+  local data = {}
+  for line in f:lines() do
+    local k, v = line:match("^([^=]+)=(.+)$")
+    if k and v then data[k] = tonumber(v) or v end
+  end
+  f:close()
+  return data
+end
+
+function MT.cache.save(gaSize, rvaTable, aobTable)
+  local path = MT.cache.getPath(gaSize)
+  if not path then return false end
+  local f = io.open(path, "w")
+  if not f then return false end
+  for k, v in pairs(rvaTable) do
+    if type(v) == "number" then f:write("rva." .. k .. "=" .. v .. "\n") end
+  end
+  for k, v in pairs(aobTable) do
+    if type(v) == "number" then f:write("aob." .. k .. "=" .. v .. "\n") end
+  end
+  f:close()
+  return true
+end
+
+-- ============================================================
+-- MT.config -- User preferences (persisted to %APPDATA%)
+-- ============================================================
+MT.config = {}
+MT.config._data = {}
+
+function MT.config.getPath()
+  local dir = MT.cache.getDir()
+  if not dir then return nil end
+  return dir .. "\\config.ini"
+end
+
+function MT.config.load()
+  local path = MT.config.getPath()
+  if not path then return end
+  local f = io.open(path, "r")
+  if not f then return end
+  MT.config._data = {}
+  for line in f:lines() do
+    local k, v = line:match("^([^=]+)=(.+)$")
+    if k and v then
+      if v == "true" then v = true
+      elseif v == "false" then v = false
+      else v = tonumber(v) or v end
+      MT.config._data[k] = v
+    end
+  end
+  f:close()
+end
+
+function MT.config.save()
+  local path = MT.config.getPath()
+  if not path then return false end
+  local f = io.open(path, "w")
+  if not f then return false end
+  for k, v in pairs(MT.config._data) do
+    f:write(k .. "=" .. tostring(v) .. "\n")
+  end
+  f:close()
+  return true
+end
+
+function MT.config.get(key, default)
+  local v = MT.config._data[key]
+  if v == nil then return default end
+  return v
+end
+
+function MT.config.set(key, value)
+  MT.config._data[key] = value
+  MT.config.save()
+end
+
+-- Load config on startup
+MT.config.load()
+
+-- src/11_cheats_resources.lua — Cheat namespace init + resource cheats (MT.cheats.resources)
+-- ============================================================
+-- MT.cheats -- Cheat Logic Functions
+-- ============================================================
+MT.cheats = {}
+MT.cheats.resources = {}
+MT.cheats.stats = {}
+MT.cheats.battle = {}
+MT.cheats.explore = {}
+MT.cheats.sect = {}
+
+-- ── Resources ────────────────────────────────────────────────
+
+function MT.cheats.resources.setMoney(val)
+  local hero = MT.game.getHero()
+  if not hero then error("角色未找到 Hero not found") end
+  local itemListData = readQword(hero + 0x220)
+  if not itemListData or itemListData == 0 then error("物品数据未找到 ItemListData not found") end
+  writeInteger(itemListData + 0x18, math.floor(tonumber(val) or 9999))
+  return string.format("银两已设置为 %d", tonumber(val) or 9999)
+end
+
+function MT.cheats.resources.setSectCurrency(val)
+  local hero = MT.game.getHero()
+  if not hero then error("角色未找到 Hero not found") end
+  local v = tonumber(val) or 9999
+  writeFloat(hero + 0x1C0, v * 1.0)
+  return string.format("门派贡献已设置为 %.0f", v)
+end
+
+function MT.cheats.resources.setFactionContrib(val)
+  local wd = MT.game.getWorldData()
+  if not wd then error("世界数据为空 WorldData null") end
+  local forces = readQword(wd + 0x48)
+  if not forces or forces == 0 then error("门派数据为空 Forces null") end
+  local forceItems = readQword(forces + 0x10)
+  local forceCount = readInteger(forces + 0x18)
+  local newVal = tonumber(val) or 999
+  local changed = 0
+  for i = 0, forceCount - 1 do
+    local fd = readQword(forceItems + 0x20 + i * 8)
+    if fd and fd ~= 0 then
+      writeFloat(fd + 0x170, newVal * 1.0)
+      changed = changed + 1
+    end
+  end
+  return string.format("已设置 %d 个门派贡献为 %.0f", changed, newVal)
+end
+
+function MT.cheats.resources.setMeteorite(val)
+  local wd = MT.game.getWorldData()
+  if not wd then error("世界数据为空 WorldData null") end
+  local v = tonumber(val) or 999
+  if v &lt; 0 then error("数值无效 Invalid amount") end
+  writeInteger(wd + 0x228, math.floor(v))
+  return string.format("陨铁已设置为 %d", v)
+end
+
+function MT.cheats.resources.maxRarity()
+  local hero = MT.game.getHero()
+  if not hero then error("角色未找到 Hero not found") end
+  local itemListData = readQword(hero + 0x220)
+  if not itemListData or itemListData == 0 then error("物品数据未找到 ItemListData not found") end
+  local allItem = readQword(itemListData + 0x28)
+  if not allItem or allItem == 0 then error("物品列表为空 allItem list null") end
+  local itemCount = readInteger(allItem + 0x18)
+  local itemArr = readQword(allItem + 0x10)
+  if not itemArr or itemArr == 0 then error("物品数组为空 Item array null") end
+  local changed = 0
+  for i = 0, itemCount - 1 do
+    local item = readQword(itemArr + 0x20 + i * 8)
+    if item and item ~= 0 then
+      local cur = readInteger(item + 0x40)
+      if cur ~= 5 then
+        writeInteger(item + 0x40, 5)
+        changed = changed + 1
+      end
+    end
+  end
+  return string.format("已将 %d/%d 物品设为最高品质", changed, itemCount)
+end
+
+-- src/12_cheats_stats.lua — Stat cheats including toggles (MT.cheats.stats)
+-- ── Stats ────────────────────────────────────────────────────
+
+function MT.cheats.stats.restoreHP()
+  local hero = MT.game.getHero()
+  if not hero then error("角色未找到 Hero not found") end
+  local maxhp = readFloat(hero + 0x17C)
+  writeFloat(hero + 0x178, maxhp)
+  return string.format("生命已恢复至 %.0f", maxhp)
+end
+
+function MT.cheats.stats.clearInjury()
+  local hero = MT.game.getHero()
+  if not hero then error("角色未找到 Hero not found") end
+  writeFloat(hero + 0x1A0, 0.0)
+  writeFloat(hero + 0x1A4, 0.0)
+  writeFloat(hero + 0x1A8, 0.0)
+  return "所有伤势已清除 Injuries cleared"
+end
+
+function MT.cheats.stats.setStatCaps(val)
+  local hero = MT.game.getHero()
+  if not hero then error("角色未找到 Hero not found") end
+  local capValue = tonumber(val) or 99.0
+  local lists = {0x130, 0x148, 0x160}
+  local total = 0
+  for _, offset in ipairs(lists) do
+    local listPtr = readQword(hero + offset)
+    if listPtr and listPtr ~= 0 then
+      local count = readInteger(listPtr + 0x18)
+      local items = readQword(listPtr + 0x10)
+      if items and items ~= 0 and count then
+        for j = 0, count - 1 do
+          local cur = readFloat(items + 0x20 + j * 4)
+          if cur and capValue &gt; cur then
+            writeFloat(items + 0x20 + j * 4, capValue)
+            total = total + 1
+          end
+        end
+      end
+    end
+  end
+  return string.format("已提升 %d 项属性上限至 %.0f", total, capValue)
+end
+
+function MT.cheats.stats.setTalentPoints(val)
+  local hero = MT.game.getHero()
+  if not hero then error("角色未找到 Hero not found") end
+  local v = tonumber(val) or 10
+  writeFloat(hero + 0x35C, v * 1.0)
+  return string.format("天赋点已设置为 %.0f", v)
+end
+
+function MT.cheats.stats.setSkillLimit(val)
+  local limit = tonumber(val) or 99
+  local c = MT.il2cpp.init()
+  if not c:ensure("gd", "GlobalData", nil, {skillOff=0x130}) then error("GlobalData未加载 GlobalData not loaded") end
+  local listPtr = readQword(c.gd.static + c.gd.skillOff)
+  if not listPtr or listPtr == 0 then error("武学数据未找到 MaxSkillNum list not found") end
+  local count = readInteger(listPtr + 0x18)
+  local items = readQword(listPtr + 0x10)
+  for i = 0, count - 1 do
+    writeFloat(items + 0x20 + i * 4, limit)
+  end
+  return string.format("已将 %d 级武学上限设为 %d Set %d tiers to %d", count, limit, count, limit)
+end
+
+function MT.cheats.stats.setFame(val)
+  local hero = MT.game.getHero()
+  if not hero then error("角色未找到 Hero not found") end
+  local v = tonumber(val) or 1000
+  writeFloat(hero + 0x1C4, v * 1.0)
+  writeFloat(hero + 0x1C8, 0.0)  -- clear bad fame
+  return string.format("声望已设置为 %.0f, 恶名已清除", v)
+end
+
+function MT.cheats.stats.maxNpcFavor()
+  local wd = MT.game.getWorldData()
+  if not wd then error("世界数据为空 WorldData null") end
+  local herosList = readQword(wd + 0x50)
+  if not herosList or herosList == 0 then error("角色列表为空 HerosList null") end
+  local heroCount = readInteger(herosList + 0x18)
+  local itemsPtr = readQword(herosList + 0x10)
+  if not itemsPtr or itemsPtr == 0 then error("角色数据为空 HerosList items null") end
+  local boosted = 0
+  for i = 1, heroCount - 1 do
+    local npc = readQword(itemsPtr + 0x20 + i * 8)
+    if npc and npc ~= 0 then
+      writeFloat(npc + 0x124, 100.0)
+      boosted = boosted + 1
+    end
+  end
+  return string.format("已将 %d 个NPC好感设为 100", boosted)
+end
+
+function MT.cheats.stats.maxFactionAffinity()
+  local hero = MT.game.getHero()
+  if not hero then error("角色未找到 Hero not found") end
+  local playerForceID = readInteger(hero + 0x84)
+  local wd = MT.game.getWorldData()
+  if not wd then error("世界数据为空 WorldData null") end
+  local forces = readQword(wd + 0x48)
+  if not forces or forces == 0 then error("门派数据为空 Forces null") end
+  local forceItems = readQword(forces + 0x10)
+  local forceCount = readInteger(forces + 0x18)
+  local changed = 0
+  -- Set all factions' favor toward player's faction to 100
+  for i = 0, forceCount - 1 do
+    local fd = readQword(forceItems + 0x20 + i * 8)
+    if fd and fd ~= 0 then
+      local fid = readInteger(fd + 0x10)
+      if fid ~= playerForceID then
+        local listPtr = readQword(fd + 0xD0)
+        if listPtr and listPtr ~= 0 then
+          local itemsArr = readQword(listPtr + 0x10)
+          local size = readInteger(listPtr + 0x18)
+          if itemsArr and itemsArr ~= 0 and playerForceID &lt; size then
+            writeFloat(itemsArr + 0x20 + playerForceID * 4, 100.0)
+            changed = changed + 1
+          end
+        end
+      end
+    end
+  end
+  -- Also set player's faction favor toward all others
+  local playerFD = nil
+  for i = 0, forceCount - 1 do
+    local fd = readQword(forceItems + 0x20 + i * 8)
+    if fd and fd ~= 0 and readInteger(fd + 0x10) == playerForceID then playerFD = fd; break end
+  end
+  if playerFD then
+    local listPtr = readQword(playerFD + 0xD0)
+    if listPtr and listPtr ~= 0 then
+      local itemsArr = readQword(listPtr + 0x10)
+      local size = readInteger(listPtr + 0x18)
+      if itemsArr and itemsArr ~= 0 then
+        for j = 0, size - 1 do
+          if j ~= playerForceID then
+            writeFloat(itemsArr + 0x20 + j * 4, 100.0)
+          end
+        end
+      end
+    end
+  end
+  return string.format("已将 %d 个门派好感设为 100", changed)
+end
+
+-- ── Stats: Talent Slots (toggle) ────────────────────────────
+
+MT.cheats.stats._talentSlotState = nil
+
+function MT.cheats.stats.talentSlotEnable(slots)
+  local n = math.floor(slots)
+  local c = MT.il2cpp.init()
+  if not c:ensure("hd", "HeroData") then error("HeroData未加载 HeroData not loaded yet") end
+  local targetAddr = MT.method.findAddr(c.hd.klass, "GetMaxTagNum")
+  if not targetAddr or targetAddr == 0 then error("GetMaxTagNum未找到 GetMaxTagNum not found") end
+  local origBytes = {}
+  for i = 0, 5 do origBytes[i+1] = readBytes(targetAddr + i, 1) end
+  MT.cheats.stats._talentSlotState = {addr = targetAddr, orig = origBytes}
+  -- mov eax, N; ret (encode N as 4-byte little-endian)
+  writeBytes(targetAddr, {0xB8, n % 256, math.floor(n/256) % 256, math.floor(n/65536) % 256, math.floor(n/16777216) % 256, 0xC3})
+end
+
+function MT.cheats.stats.talentSlotDisable()
+  local s = MT.cheats.stats._talentSlotState
+  if s and s.orig and s.addr then
+    for i = 1, #s.orig do writeBytes(s.addr + i - 1, s.orig[i]) end
+    MT.cheats.stats._talentSlotState = nil
+  end
+end
+
+-- ── Stats: Combat EXP Buff (toggle) ─────────────────────────
+
+MT.cheats.stats._combatExpState = nil
+
+function MT.cheats.stats.combatExpEnable(pct)
+  local multi = pct / 100.0
+  local c = MT.il2cpp.init()
+  if not c:ensure("gdc", "GameDataController", 0x20, {tagBaseOff=0x198}) then error("GDC未加载 GDC not loaded") end
+  local gdcInstance = readQword(c.gdc.static + c.gdc.instOff)
+  if not gdcInstance or gdcInstance == 0 then error("GDC实例未找到 GDC instance not found") end
+  local tagDataBase = readQword(gdcInstance + c.gdc.tagBaseOff)
+  if not tagDataBase or tagDataBase == 0 then error("天赋数据为空 heroTagDataBase null") end
+  local tagItems = readQword(tagDataBase + 0x10)
+  if not tagItems or tagItems == 0 then error("天赋数据项为空 tagDataBase items null") end
+  local tag222 = readQword(tagItems + 0x20 + 222 * 8)
+  if not tag222 or tag222 == 0 then error("Tag222未找到 Tag 222 not found in DB") end
+  local buffData = readQword(tag222 + 0x50)
+  if not buffData or buffData == 0 then error("Tag222 buffData为空 Tag 222 buffData null") end
+  local dict = readQword(buffData + 0x10)
+  if not dict or dict == 0 then error("buffData字典为空 buffData dict null") end
+  local entries = readQword(dict + 0x18)
+  if not entries or entries == 0 then error("字典项为空 dict entries null") end
+  local cnt = readInteger(dict + 0x20)
+  local buffAddrs = {}
+  for i = 0, cnt - 1 do
+    local base = entries + 0x20 + i * 16
+    local key = readInteger(base + 8)
+    if key == 176 then buffAddrs.fight = base + 12 end
+    if key == 177 then buffAddrs.book = base + 12 end
+  end
+  local origFight = buffAddrs.fight and readFloat(buffAddrs.fight) or 0
+  local origBook = buffAddrs.book and readFloat(buffAddrs.book) or 0
+  if buffAddrs.fight then writeFloat(buffAddrs.fight, multi) end
+  if buffAddrs.book then writeFloat(buffAddrs.book, multi) end
+  MT.cheats.stats._combatExpState = {addrs = buffAddrs, origFight = origFight, origBook = origBook}
+end
+
+function MT.cheats.stats.combatExpDisable()
+  local s = MT.cheats.stats._combatExpState
+  if s and s.addrs then
+    if s.addrs.fight and s.origFight then writeFloat(s.addrs.fight, s.origFight) end
+    if s.addrs.book and s.origBook then writeFloat(s.addrs.book, s.origBook) end
+    MT.cheats.stats._combatExpState = nil
+  end
+end
+
+-- ── Stats: Living EXP Buff (toggle) ─────────────────────────
+
+MT.cheats.stats._livingExpState = nil
+
+function MT.cheats.stats.livingExpEnable(pct)
+  local multi = pct / 100.0
+  local c = MT.il2cpp.init()
+  if not c:ensure("gdc", "GameDataController", 0x20, {tagBaseOff=0x198}) then error("GDC未加载 GDC not loaded") end
+  local gdcInstance = readQword(c.gdc.static + c.gdc.instOff)
+  if not gdcInstance or gdcInstance == 0 then error("GDC实例未找到 GDC instance not found") end
+  local tagDataBase = readQword(gdcInstance + c.gdc.tagBaseOff)
+  if not tagDataBase or tagDataBase == 0 then error("天赋数据为空 heroTagDataBase null") end
+  local tagItems = readQword(tagDataBase + 0x10)
+  if not tagItems or tagItems == 0 then error("天赋数据项为空 tagDataBase items null") end
+  local tag243 = readQword(tagItems + 0x20 + 243 * 8)
+  if not tag243 or tag243 == 0 then error("Tag243未找到 Tag 243 not found in DB") end
+  local buffData = readQword(tag243 + 0x50)
+  if not buffData or buffData == 0 then error("Tag243 buffData为空 Tag 243 buffData null") end
+  local dict = readQword(buffData + 0x10)
+  if not dict or dict == 0 then error("buffData字典为空 buffData dict null") end
+  local entries = readQword(dict + 0x18)
+  if not entries or entries == 0 then error("字典项为空 dict entries null") end
+  local cnt = readInteger(dict + 0x20)
+  local livingAddr = nil
+  for i = 0, cnt - 1 do
+    local base = entries + 0x20 + i * 16
+    local key = readInteger(base + 8)
+    if key == 178 then livingAddr = base + 12 end
+  end
+  local origVal = livingAddr and readFloat(livingAddr) or 0
+  if livingAddr then writeFloat(livingAddr, multi) end
+  MT.cheats.stats._livingExpState = {addr = livingAddr, origVal = origVal}
+end
+
+function MT.cheats.stats.livingExpDisable()
+  local s = MT.cheats.stats._livingExpState
+  if s and s.addr and s.origVal then
+    writeFloat(s.addr, s.origVal)
+    MT.cheats.stats._livingExpState = nil
+  end
+end
+
+-- ── Stats: Character Creation ────────────────────────────────
+
+function MT.cheats.stats.getStartMenuController()
+  local c = MT.il2cpp.init()
+  local klass = c.findClass("StartMenuController")
+  if not klass then error("请先进入角色创建界面 [Enter character creation screen first]") end
+  local sf = readQword(klass + 0xB8)
+  local inst = readQword(sf)
+  if not inst or inst == 0 then error("请先进入创建界面 StartMenuController instance null") end
+  return inst, klass
+end
+
+function MT.cheats.stats.setAttrPoints(val)
+  MT.game.checkAlive()
+  local smc = MT.cheats.stats.getStartMenuController()
+  local v = tonumber(val) or 999
+  writeInteger(smc + 0x80, math.floor(v))
+  return string.format("属性点已设置为 %d", v)
+end
+
+function MT.cheats.stats.setFightPoints(val)
+  MT.game.checkAlive()
+  local smc = MT.cheats.stats.getStartMenuController()
+  local v = tonumber(val) or 999
+  writeInteger(smc + 0x84, math.floor(v))
+  return string.format("武学点已设置为 %d", v)
+end
+
+function MT.cheats.stats.setLivingPoints(val)
+  MT.game.checkAlive()
+  local smc = MT.cheats.stats.getStartMenuController()
+  local v = tonumber(val) or 999
+  writeInteger(smc + 0x88, math.floor(v))
+  return string.format("生活点已设置为 %d", v)
+end
+
+function MT.cheats.stats.setCreationTalentPoints(val)
+  MT.game.checkAlive()
+  local c = MT.il2cpp.init()
+  local klass = c.findClass("StartGameSettingController")
+  if not klass then error("请先进入角色创建界面 [Enter character creation screen first]") end
+  local sf = readQword(klass + 0xB8)
+  local inst = readQword(sf)
+  if not inst or inst == 0 then error("StartGameSettingController instance null") end
+  local player = readQword(inst + 0x18)
+  if not player or player == 0 then error("请先进入角色创建界面 [Player data null]") end
+  local v = tonumber(val) or 999
+  writeFloat(player + 0x35C, v * 1.0)
+  return string.format("创建天赋点已设置为 %d", v)
+end
+
+MT.cheats.stats._ccTagSlotOrig = nil
+
+function MT.cheats.stats.creationTalentSlotEnable(slots)
+  MT.game.checkAlive()
+  local n = math.floor(slots)
+  if n &lt; 1 or n &gt; 99 then error("天赋槽范围1-99") end
+  local c = MT.il2cpp.init()
+  local klass = c.findClass("StartMenuController")
+  if not klass then error("请先进入角色创建界面 [Enter character creation screen first]") end
+
+  local chooseAddr = MT.method.findAddr(klass, "StartChooseTagClicked", 1)
+  if not chooseAddr then error("StartChooseTagClicked not found") end
+  local refreshAddr = MT.method.findAddr(klass, "RefreshTagMenu", 0)
+  if not refreshAddr then error("RefreshTagMenu not found") end
+
+  local origPatches = {}
+
+  -- Patch 1: StartChooseTagClicked — scan for 83 78 18 05 (cmp [rax+18h], 5)
+  local found1 = false
+  for off = 0, 0x400 do
+    local a = chooseAddr + off
+    if readBytes(a, 1) == 0x83 and readBytes(a+2, 1) == 0x18 and readBytes(a+3, 1) == 0x05 then
+      origPatches[1] = {addr = a+3, val = readBytes(a+3, 1)}
+      writeBytes(a+3, n)
+      found1 = true
+      break
+    end
+  end
+
+  -- Patch 2: RefreshTagMenu — scan for 83 F8 05 (cmp eax, 5)
+  local found2 = false
+  for off = 0, 0x1000 do
+    local a = refreshAddr + off
+    if readBytes(a, 1) == 0x83 and readBytes(a+1, 1) == 0xF8 and readBytes(a+2, 1) == 0x05 then
+      origPatches[2] = {addr = a+2, val = readBytes(a+2, 1)}
+      writeBytes(a+2, n)
+      found2 = true
+      break
+    end
+  end
+
+  if not found1 or not found2 then
+    -- Restore any partial patches
+    for _, o in ipairs(origPatches) do writeBytes(o.addr, o.val) end
+    error(string.format("Only found %d/2 patch locations", (found1 and 1 or 0) + (found2 and 1 or 0)))
+  end
+
+  MT.cheats.stats._ccTagSlotOrig = origPatches
+end
+
+function MT.cheats.stats.creationTalentSlotDisable()
+  local patches = MT.cheats.stats._ccTagSlotOrig
+  if patches then
+    for _, o in ipairs(patches) do writeBytes(o.addr, o.val) end
+    MT.cheats.stats._ccTagSlotOrig = nil
+  end
+end
+
+-- src/13_cheats_battle.lua — Battle cheats (MT.cheats.battle)
+-- ── Battle ───────────────────────────────────────────────────
+
+MT.cheats.battle._speedState = nil
+
+function MT.cheats.battle.battleSpeedEnable(multi)
+  local speedVal = multi
+  if MT.cheats.battle._speedState then MT.cheats.battle._speedState.timer.destroy() end
+  local speedTimer = createTimer(nil)
+  speedTimer.Interval = 50
+  speedTimer.OnTimer = function()
+    local pid = getOpenedProcessID()
+    if not pid or pid == 0 then speedTimer.Enabled = false; return end
+    local ok, wd = pcall(MT.game.getWorldData)
+    if ok and wd then pcall(writeFloat, wd + 0x1D0, speedVal) end
+  end
+  speedTimer.Enabled = true
+  MT.cheats.battle._speedState = {timer = speedTimer, val = speedVal}
+end
+
+function MT.cheats.battle.battleSpeedDisable()
+  local s = MT.cheats.battle._speedState
+  if s and s.timer then s.timer.destroy() end
+  MT.cheats.battle._speedState = nil
+  local ok, wd = pcall(MT.game.getWorldData)
+  if ok and wd then writeFloat(wd + 0x1D0, 1.0) end
+end
+
+function MT.cheats.battle.enemyOneHP()
+  local c = MT.il2cpp.init()
+  if not c:ensure("bc", "BattleController", 0x50) then error("未在战斗中 BattleController not loaded - enter battle first") end
+  local bcInstance = readQword(c.bc.static + c.bc.instOff)
+  if not bcInstance or bcInstance == 0 then error("未在战斗中 Not in battle") end
+  local playerUnit = readQword(bcInstance + 0x1A8)
+  if not playerUnit or playerUnit == 0 then error("玩家单位未找到 Player unit not found") end
+  local pTeam = readQword(playerUnit + 0x58)
+  if not pTeam or pTeam == 0 then error("玩家队伍为空 Player team null") end
+  local playerTeamID = readInteger(pTeam + 0x10)
+  local teams = readQword(bcInstance + 0x70)
+  if not teams or teams == 0 then error("队伍列表为空 Teams list null") end
+  local teamItems = readQword(teams + 0x10)
+  if not teamItems or teamItems == 0 then error("队伍数据为空 Team items null") end
+  local teamCount = readInteger(teams + 0x18)
+  local killed = 0
+  for t = 0, teamCount - 1 do
+    local team = readQword(teamItems + 0x20 + t * 8)
+    if team and team ~= 0 then
+      local teamID = readInteger(team + 0x10)
+      if teamID ~= playerTeamID then
+        local units = readQword(team + 0x18)
+        if units and units ~= 0 then
+          local unitCount = readInteger(units + 0x18)
+          local unitItems = readQword(units + 0x10)
+          if unitItems and unitItems ~= 0 then
+            for u = 0, unitCount - 1 do
+              local unit = readQword(unitItems + 0x20 + u * 8)
+              if unit and unit ~= 0 then
+                local heroData = readQword(unit + 0x40)
+                if heroData and heroData ~= 0 then
+                  local hp = readFloat(heroData + 0x178)
+                  if hp &gt; 0 then
+                    writeFloat(heroData + 0x178, 1.0)
+                    killed = killed + 1
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  return string.format("已将 %d 个敌人设为 1 HP", killed)
+end
+
+-- src/14_cheats_explore.lua — Exploration cheats (MT.cheats.explore)
+-- ── Exploration ──────────────────────────────────────────────
+
+MT.cheats.explore._horseState = nil
+
+function MT.cheats.explore.horseSpeedEnable(multi)
+  local hero = MT.game.getHero()
+  if not hero then error("角色未找到 Hero not found") end
+  local horseItem = readQword(hero + 0x208)
+  if not horseItem or horseItem == 0 then error("未装备坐骑 No horse equipped!") end
+  local hdOff = 0x88
+  local horseData = readQword(horseItem + hdOff)
+  if not horseData or horseData == 0 then
+    hdOff = 0x80
+    horseData = readQword(horseItem + hdOff)
+  end
+  if not horseData or horseData == 0 then error("坐骑无数据 Horse has no HorseData") end
+  local origSpeed = readFloat(horseData + 0x14)
+  MT.cheats.explore._horseState = {addr = horseData + 0x14, val = origSpeed}
+  writeFloat(horseData + 0x14, origSpeed * multi)
+end
+
+function MT.cheats.explore.horseSpeedDisable()
+  local s = MT.cheats.explore._horseState
+  if s then
+    writeFloat(s.addr, s.val)
+    MT.cheats.explore._horseState = nil
+  end
+end
+
+function MT.cheats.explore.dungeonReveal()
+  local c = MT.il2cpp.init()
+  local ecClass = c.findClass("ExploreController")
+  if not ecClass then error("探索控制器未找到 ExploreController not found") end
+  local ecStatic = readQword(ecClass + 0xB8)
+  if not ecStatic or ecStatic == 0 then error("ExploreController静态数据=0") end
+  local ecInst = readQword(ecStatic + 0x8)
+  if not ecInst or ecInst == 0 then error("未在迷宫中 Not in dungeon") end
+  local inited = readBytes(ecInst + 0xD0, 1)
+  if not inited or inited == 0 then error("请先进入迷宫 Enter a dungeon first") end
+  local seeAllAddr = MT.method.findAddr(ecClass, "SeeAllTile", 0)
+  if not seeAllAddr then error("SeeAllTile方法未找到 SeeAllTile not found") end
+  local cb = getAddress("cmdBuf")
+  if not cb or cb == 0 then error("未连接 Not connected (cmdBuf missing)") end
+  writeQword(cb + 0x08, ecInst)
+  writeQword(cb + 0x68, seeAllAddr)
+  writeInteger(cb + 0x04, 0)
+  writeInteger(cb, 6)
+  local elapsed = 0
+  while elapsed &lt; 2000 do
+    if readInteger(cb + 0x04) ~= 0 then break end
+    sleep(16); elapsed = elapsed + 16
+  end
+  return "迷宫全开完成 Dungeon revealed!"
+end
+
+function MT.cheats.explore.infiniteStamina()
+  local c = MT.il2cpp.init()
+  local ecClass = c.findClass("ExploreController")
+  if not ecClass then error("ExploreController not found") end
+  local ecStatic = readQword(ecClass + 0xB8)
+  if not ecStatic or ecStatic == 0 then error("ExploreController static=0") end
+  local ecInst = readQword(ecStatic + 0x8)
+  if not ecInst or ecInst == 0 then error("未在迷宫中 Not in dungeon") end
+  writeInteger(ecInst + 0x98, 999)
+  return "耐力已设为999 Stamina set to 999"
+end
+
+-- src/15_cheats_sect.lua — Sect management cheats (MT.cheats.sect)
+-- ── Sect ─────────────────────────────────────────────────────
+
+-- Helper: iterate all living sect members, return list of hero pointers
+function MT.cheats.sect.getSectMembers()
+  MT.game.checkAlive()
+  local hero = MT.game.getHero()
+  if not hero then error("角色未找到 Hero not found") end
+  local playerForceID = readInteger(hero + 0x84)
+  if not playerForceID then error("无法读取门派ID Cannot read belongForceID") end
+  local wd = MT.game.getWorldData()
+  local hl = readQword(wd + 0x50)
+  if not hl or hl == 0 then error("角色列表为空 HerosList null") end
+  local heroCount = readInteger(hl + 0x18)
+  local itemsPtr = readQword(hl + 0x10)
+  if not itemsPtr or itemsPtr == 0 then error("角色数据为空 HerosList items null") end
+  local members = {}
+  for i = 0, heroCount - 1 do
+    local h = readQword(itemsPtr + 0x20 + i * 8)
+    if h and h ~= 0 then
+      local dead = readBytes(h + 0x61, 1)
+      local fid = readInteger(h + 0x84)
+      if fid == playerForceID and dead == 0 then
+        table.insert(members, h)
+      end
+    end
+  end
+  if #members == 0 then error("无存活门派成员 No living sect members found") end
+  return members, playerForceID
+end
+
+-- Helper: get the player's ForceData
+function MT.cheats.sect.getPlayerForceData()
+  MT.game.checkAlive()
+  local hero = MT.game.getHero()
+  if not hero then error("角色未找到 Hero not found") end
+  local playerForceID = readInteger(hero + 0x84)
+  local wd = MT.game.getWorldData()
+  local forces = readQword(wd + 0x48)
+  local forceItems = readQword(forces + 0x10)
+  local forceCount = readInteger(forces + 0x18)
+  for i = 0, forceCount - 1 do
+    local fd = readQword(forceItems + 0x20 + i * 8)
+    if fd and fd ~= 0 and readInteger(fd + 0x10) == playerForceID then
+      return fd, playerForceID
+    end
+  end
+  error("门派数据未找到 Player ForceData not found")
+end
+
+MT.cheats.sect._memberLimitHook = nil
+
+function MT.cheats.sect.memberLimitEnable(newLimit)
+  MT.game.checkAlive()
+  local c = MT.il2cpp.init()
+  local fdClass = c.findClass("ForceData")
+  if not fdClass then error("ForceData类未找到 ForceData class not found") end
+  local gmfn = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+  local nm = allocateMemory(64)
+
+  -- Hook 1: GetMaxHeroNum -&gt; return newLimit (float)
+  writeString(nm, "GetMaxHeroNum")
+  local mi1 = executeCodeEx(0, nil, gmfn, fdClass, nm, 0)
+  if not mi1 or mi1 == 0 then deAlloc(nm); error("GetMaxHeroNum未找到 not found") end
+  local target1 = readQword(mi1)
+  local orig1 = readBytes(target1, 14, true)
+
+  local cave = allocateMemory(64, target1) or allocateMemory(64)
+  local valueAddr = cave + 16
+  writeFloat(valueAddr, newLimit * 1.0)
+  local ripOff = (cave + 16) - (cave + 8)
+  writeBytes(cave, 0xF3, 0x0F, 0x10, 0x05)
+  writeInteger(cave + 4, ripOff)
+  writeBytes(cave + 8, 0xC3)
+
+  local jmpRel = cave - (target1 + 5)
+  if jmpRel &lt; -0x80000000 or jmpRel &gt; 0x7FFFFFFF then
+    error("Cave too far for E9 rel32 — ASLR placement issue")
+  end
+  if jmpRel &lt; 0 then jmpRel = 0x100000000 + jmpRel end
+  writeBytes(target1, 0xE9)
+  writeBytes(target1 + 1, jmpRel % 256, math.floor(jmpRel/256) % 256,
+             math.floor(jmpRel/65536) % 256, math.floor(jmpRel/16777216) % 256)
+  writeBytes(target1 + 5, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90)
+
+  -- Hook 2: PopulationNotFull -&gt; always return true
+  writeString(nm, "PopulationNotFull")
+  local mi2 = executeCodeEx(0, nil, gmfn, fdClass, nm, 0)
+  if not mi2 or mi2 == 0 then deAlloc(nm); error("PopulationNotFull未找到 not found") end
+  local target2 = readQword(mi2)
+  local orig2 = readBytes(target2, 3, true)
+  writeBytes(target2, 0xB0, 0x01, 0xC3)  -- mov al,1; ret
+
+  deAlloc(nm)
+  MT.cheats.sect._memberLimitHook = {
+    target1 = target1, orig1 = orig1,
+    target2 = target2, orig2 = orig2,
+    cave = cave
+  }
+end
+
+function MT.cheats.sect.memberLimitDisable()
+  local h = MT.cheats.sect._memberLimitHook
+  if h then
+    for i, b in ipairs(h.orig1) do
+      writeBytes(h.target1 + i - 1, b)
+    end
+    for i, b in ipairs(h.orig2) do
+      writeBytes(h.target2 + i - 1, b)
+    end
+    deAlloc(h.cave)
+    MT.cheats.sect._memberLimitHook = nil
+  end
+end
+
+function MT.cheats.sect.setSectTalentPoints(val)
+  local pts = tonumber(val) or 99
+  local members = MT.cheats.sect.getSectMembers()
+  for _, h in ipairs(members) do
+    writeFloat(h + 0x35C, pts * 1.0)
+  end
+  return string.format("%d人天赋点已设%d", #members, pts)
+end
+
+function MT.cheats.sect.setSectTalentSlots(val)
+  local slots = tonumber(val) or 99
+  local c2 = MT.il2cpp.init()
+  if not c2:ensure("hd", "HeroData") then error("HeroData未加载 HeroData not loaded") end
+  local targetAddr = MT.method.findAddr(c2.hd.klass, "GetMaxTagNum")
+  if not targetAddr or targetAddr == 0 then error("GetMaxTagNum未找到 GetMaxTagNum not found") end
+  _sectTalentCapPatches = {}
+  for i = 0, 5 do _sectTalentCapPatches[i+1] = readBytes(targetAddr + i, 1) end
+  local b0 = slots % 256
+  local b1 = math.floor(slots / 256) % 256
+  local b2 = math.floor(slots / 65536) % 256
+  local b3 = math.floor(slots / 16777216) % 256
+  writeBytes(targetAddr, {0xB8, b0, b1, b2, b3, 0xC3})
+  return string.format("天赋槽上限已设%d", slots)
+end
+
+function MT.cheats.sect.sectProdigy()
+  local cb = getAddress("cmdBuf")
+  if not cb or cb == 0 then error("请先连接 cmdBuf not found - connect first") end
+
+  local c = MT.il2cpp.init()
+  local hero = MT.game.getHero()
+  if not hero then error("角色未找到 Hero not found") end
+  local playerForceID = readInteger(hero + 0x84)
+  local wd = MT.game.getWorldData()
+  local hl = readQword(wd + 0x50)
+  local heroCount = readInteger(hl + 0x18)
+  local itemsPtr = readQword(hl + 0x10)
+
+  -- Resolve AddTag MethodInfo
+  local hdClass = c.hd and c.hd.klass or c.findClass("HeroData")
+  if not hdClass then error("HeroData类未找到 HeroData class not found") end
+  local getMethods = getAddress("GameAssembly.il2cpp_class_get_methods")
+  local getMethodName = getAddress("GameAssembly.il2cpp_method_get_name")
+  local riAddr = getAddress("GameAssembly.il2cpp_runtime_invoke")
+
+  local addTagMI = nil
+  local iter = allocateMemory(8); writeQword(iter, 0)
+  while true do
+    local mi = executeCodeEx(0, nil, getMethods, hdClass, iter)
+    if not mi or mi == 0 then break end
+    local np = executeCodeEx(0, nil, getMethodName, mi)
+    if np and readString(np, 64) == "AddTag" and not addTagMI then addTagMI = mi end
+  end
+  deAlloc(iter)
+  if not addTagMI then error("AddTag方法未找到 AddTag MethodInfo not found") end
+
+  -- Check if hero has a given tag
+  local function heroHasTag(h, tagID)
+    local tagList = readQword(h + 0x360)
+    if not tagList or tagList == 0 then return false end
+    local count = readInteger(tagList + 0x18)
+    local items = readQword(tagList + 0x10)
+    if not items or items == 0 then return false end
+    for j = 0, count - 1 do
+      local tag = readQword(items + 0x20 + j * 8)
+      if tag and tag ~= 0 and readInteger(tag + 0x10) == tagID then return true end
+    end
+    return false
+  end
+
+  -- Call AddTag on main thread via hookCode cmd=8 (runtime_invoke)
+  local function mainThreadAddTag(heroPtr, tagID)
+    local vals = allocateMemory(32)
+    writeInteger(vals + 0, tagID)
+    writeFloat(vals + 4, -1.0)         -- permanent
+    writeInteger(vals + 8, 0)          -- showInfo = false
+    writeInteger(vals + 12, 0)         -- needFreshHeroDetail = false
+    writeQword(cb + 0xA0, vals + 0)   -- params[0] = &amp;id
+    writeQword(cb + 0xA8, vals + 4)   -- params[1] = &amp;time
+    writeQword(cb + 0xB0, 0)          -- params[2] = null (string source)
+    writeQword(cb + 0xB8, vals + 8)   -- params[3] = &amp;showInfo
+    writeQword(cb + 0xC0, vals + 12)  -- params[4] = &amp;needFreshHeroDetail
+    writeQword(cb + 0x90, addTagMI)
+    writeQword(cb + 0x88, heroPtr)
+    writeQword(cb + 0x68, riAddr)
+    writeInteger(cb + 0x04, 0)
+    writeInteger(cb, 8)
+    local elapsed = 0
+    while elapsed &lt; 2000 do
+      if readInteger(cb + 0x04) ~= 0 then break end
+      sleep(16); elapsed = elapsed + 16
+    end
+    deAlloc(vals)
+    return readInteger(cb + 0x04) == 1
+  end
+
+  local count222 = 0
+  local count243 = 0
+  for i = 0, heroCount - 1 do
+    local h = readQword(itemsPtr + 0x20 + i * 8)
+    if h and h ~= 0 then
+      local dead = readBytes(h + 0x61, 1)
+      local fid = readInteger(h + 0x84)
+      if fid == playerForceID and dead == 0 then
+        if not heroHasTag(h, 222) then
+          if mainThreadAddTag(h, 222) then count222 = count222 + 1 end
+        end
+        if not heroHasTag(h, 243) then
+          if mainThreadAddTag(h, 243) then count243 = count243 + 1 end
+        end
+      end
+    end
+  end
+  return string.format("武学天才+%d人, 博学多才+%d人", count222, count243)
+end
+
+function MT.cheats.sect.maxLoyalty()
+  local members = MT.cheats.sect.getSectMembers()
+  for _, h in ipairs(members) do
+    writeFloat(h + 0x1CC, 100.0)
+  end
+  return string.format("%d人忠诚度已设100", #members)
+end
+
+function MT.cheats.sect.maxSkillSlots()
+  local members = MT.cheats.sect.getSectMembers()
+  local count = 0
+  for _, h in ipairs(members) do
+    local mfs = readQword(h + 0x148)
+    if mfs and mfs ~= 0 then
+      local cnt = readInteger(mfs + 0x18)
+      local items = readQword(mfs + 0x10)
+      if items and items ~= 0 then
+        for j = 0, cnt - 1 do
+          writeFloat(items + 0x20 + j * 4, 120.0)
+        end
+        count = count + 1
+      end
+    end
+  end
+  return string.format("%d人武学槽位已设120", count)
+end
+
+function MT.cheats.sect.maxResources()
+  local playerFD = MT.cheats.sect.getPlayerForceData()
+  local rs = readQword(playerFD + 0x88)
+  local rsItems = readQword(rs + 0x10)
+  local rsSize = readInteger(rs + 0x18)
+  local rm = readQword(playerFD + 0x90)
+  local rmItems = readQword(rm + 0x10)
+  local filled = 0
+  for i = 0, rsSize - 1 do
+    local mx = readFloat(rmItems + 0x20 + i * 4)
+    writeFloat(rsItems + 0x20 + i * 4, mx)
+    filled = filled + 1
+  end
+  return string.format("%d项资源已填满", filled)
+end
+
+MT.cheats.sect._noCostPatches = nil
+
+function MT.cheats.sect.noCostEnable()
+  MT.game.checkAlive()
+  local c = MT.il2cpp.init()
+  local fdClass = c.findClass("ForceData")
+  if not fdClass then error("ForceData类未找到 ForceData not found") end
+  local getMethods = getAddress("GameAssembly.il2cpp_class_get_methods")
+  local getMethodName = getAddress("GameAssembly.il2cpp_method_get_name")
+
+  MT.cheats.sect._noCostPatches = {}
+  local iter = allocateMemory(8); writeQword(iter, 0)
+  local patched = {}
+  while true do
+    local mi = executeCodeEx(0, nil, getMethods, fdClass, iter)
+    if not mi or mi == 0 then break end
+    local namePtr = executeCodeEx(0, nil, getMethodName, mi)
+    if namePtr and namePtr ~= 0 then
+      local mname = readString(namePtr, 64)
+      if mname == "CostResource" then
+        local addr = readQword(mi)
+        if addr and addr ~= 0 and not patched[addr] then
+          local origByte = readBytes(addr, 1)
+          table.insert(MT.cheats.sect._noCostPatches, {addr=addr, orig=origByte})
+          patched[addr] = true
+          writeBytes(addr, 0xC3)  -- ret immediately
+        end
+      end
+    end
+  end
+  deAlloc(iter)
+  if #MT.cheats.sect._noCostPatches == 0 then error("CostResource方法未找到 No CostResource methods found") end
+end
+
+function MT.cheats.sect.noCostDisable()
+  if MT.cheats.sect._noCostPatches then
+    for _, p in ipairs(MT.cheats.sect._noCostPatches) do
+      writeBytes(p.addr, p.orig)
+    end
+    MT.cheats.sect._noCostPatches = nil
+  end
+end
+
+function MT.cheats.sect.research100()
+  local playerFD = MT.cheats.sect.getPlayerForceData()
+  local activeID = readInteger(playerFD + 0x128)
+  if activeID &lt; 0 then error("当前无研究 [No active research]") end
+  local tld = readQword(playerFD + 0x130)
+  local tldItems = readQword(tld + 0x10)
+  local tldCnt = readInteger(tld + 0x18)
+  for i = 0, tldCnt - 1 do
+    local e = readQword(tldItems + 0x20 + i * 8)
+    if e and e ~= 0 and readInteger(e + 0x10) == activeID then
+      writeFloat(e + 0x18, 1.0)
+      return string.format("研究%d进度已设100%%, 等1天完成", activeID)
+    end
+  end
+  error("研究" .. activeID .. "未找到 Active tech not found in techLvData")
+end
+
+function MT.cheats.sect.build1Day()
+  MT.game.checkAlive()
+  local wd = MT.game.getWorldData()
+  local areas = readQword(wd + 0x30)
+  if not areas or areas == 0 then error("区域数据为空 Areas null") end
+  local areaCount = readInteger(areas + 0x18)
+  local areaItems = readQword(areas + 0x10)
+  if not areaItems or areaItems == 0 then error("区域数据为空 Area items null") end
+  local completed = 0
+  for i = 0, areaCount - 1 do
+    local area = readQword(areaItems + 0x20 + i * 8)
+    if area and area ~= 0 then
+      local tiles = readQword(area + 0xC0)
+      if tiles and tiles ~= 0 then
+        local tileCount = readInteger(tiles + 0x18)
+        local tileItems = readQword(tiles + 0x10)
+        if tileCount and tileItems and tileItems ~= 0 then
+          for t = 0, tileCount - 1 do
+            local tile = readQword(tileItems + 0x20 + t * 8)
+            if tile and tile ~= 0 then
+              local bldg = readQword(tile + 0x28)
+              if bldg and bldg ~= 0 then
+                local bt = readInteger(bldg + 0x18) or 0
+                local ut = readInteger(bldg + 0x1C) or 0
+                local dt = readInteger(bldg + 0x20) or 0
+                if bt &gt; 0 then writeInteger(bldg + 0x18, 1); completed = completed + 1 end
+                if ut &gt; 0 then writeInteger(bldg + 0x1C, 1); completed = completed + 1 end
+                if dt &gt; 0 then writeInteger(bldg + 0x20, 1); completed = completed + 1 end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  return string.format("%d个建筑操作剩余1天", completed)
+end
+
+-- src/99_compat.lua — Backward-compatibility aliases and process watcher
+-- ============================================================
+-- Backward-compatibility aliases (old entries call these directly)
+-- ============================================================
+_il2cpp_init    = MT.il2cpp.init
+_il2cpp_reset   = MT.il2cpp.reset
+_getHero        = MT.game.getHero
+_getWorldData   = MT.game.getWorldData
+_findMethodAddr = MT.method.findAddr
+_isGameRunning  = MT.game.isRunning
+_checkGameAlive = MT.game.checkAlive
+
+-- Also expose global UI functions for backward compatibility during transition
+setStatus             = MT.ui.setStatus
+isConnected           = MT.ui.isConnected
+flashSuccess          = MT.ui.flashSuccess
+flashFail             = MT.ui.flashFail
+makeOneOff            = MT.ui.makeOneOff
+makeToggle            = MT.ui.makeToggle
+makeInput             = MT.ui.makeInput
+makeToggleInput       = MT.ui.makeToggleInput
+numericOnly           = MT.ui.numericOnly
+enableThreadControls  = MT.ui.enableThreadControls
+
+-- ============================================================
+-- Process Watcher (auto-clear caches on process change)
+-- ============================================================
+if not _processWatcherInstalled then
+  local lastPID = getOpenedProcessID()
+  registerFormAddNotification(function(frm)
+    -- This fires on various CE events. Check if PID changed.
+    local curPID = getOpenedProcessID()
+    if curPID ~= lastPID then
+      lastPID = curPID
+      _il2cppCache = nil
+      MT.hook.hookInstalled = false
+      MT.hook.S = {}
+      print("[CT] Process changed -- caches cleared")
+    end
+  end)
+  -- Also hook the OpenProcess event directly
+  if getMainForm().ProcessLabel then
+    local timer = createTimer()
+    timer.Interval = 2000
+    timer.OnTimer = function()
+      local pid = getOpenedProcessID()
+      if pid ~= lastPID then
+        lastPID = pid
+        _il2cppCache = nil
+        MT.hook.hookInstalled = false
+        MT.hook.S = {}
+        print("[CT] Process changed (timer) -- cache cleared")
+      end
+    end
+    timer.Enabled = true
+    _staleCheckTimer = timer
+  end
+  _processWatcherInstalled = true
+end
+
+print("[MT] Shared core loaded (v8)")
+
+  </LuaScript>
+</CheatTable>

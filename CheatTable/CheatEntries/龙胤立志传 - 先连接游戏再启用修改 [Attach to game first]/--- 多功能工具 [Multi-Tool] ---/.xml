@@ -1,0 +1,10 @@
+<CheatEntry>
+  <ID>80</ID>
+  <Description>"--- 多功能工具 [Multi-Tool] ---"</Description>
+  <Options moHideChildren="1" moAllowManualCollapseAndExpand="1"/>
+  <GroupHeader>1</GroupHeader>
+  <Color>FF8000</Color>
+  <x-ce2fs-child-order>
+    <id id="1500"/>
+  </x-ce2fs-child-order>
+</CheatEntry>

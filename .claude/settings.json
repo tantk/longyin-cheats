@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'FILE=$(cat | python -c \"import sys,json; print(json.load(sys.stdin).get(\\\"tool_input\\\",{}).get(\\\"file_path\\\",\\\"\\\"))\"); if [ -n \"$FILE\" ]; then if echo \"$FILE\" | grep -qiE \"\\.lua$\"; then /c/tools/luacheck.exe --no-color \"$FILE\" 2>&1; RET=$?; if [ $RET -ge 2 ]; then exit 1; fi; elif echo \"$FILE\" | grep -qiE \"\\.cea$\"; then python C:/dev/longyin-cheats/scripts/lint_cea.py \"$FILE\" /c/tools/luacheck.exe 2>&1 || true; fi; fi'",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
