@@ -11,12 +11,21 @@ if _skillLoaderTimer then pcall(function() _skillLoaderTimer.Enabled = false; _s
 if _evtLoaderTimer then pcall(function() _evtLoaderTimer.Enabled = false; _evtLoaderTimer.destroy() end) end
 -- NOTE: do NOT kill _autoConnectTimer — it's from autoload_save.lua and needs to survive CT load
 if _staleCheckTimer then pcall(function() _staleCheckTimer.Enabled = false; _staleCheckTimer.destroy() end) end
+-- Kill orphan flash timers
+if _flashTimers then
+  for t in pairs(_flashTimers) do pcall(function() t.Enabled = false; t.destroy() end) end
+end
+_flashTimers = {}
+-- Destroy stale form from previous session
+if _itemAdderForm then pcall(function() _itemAdderForm.destroy() end) end
 _maLoaderTimer = nil
 _maTabTimer = nil
 _skillLoaderTimer = nil
 _evtLoaderTimer = nil
 -- _autoConnectTimer preserved for autoload_save.lua
 _staleCheckTimer = nil
+_itemAdderForm = nil
+_mtStatusLbl = nil
 
 errorOnLookupFailure(false)
 MT = {}

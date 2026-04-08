@@ -7,6 +7,9 @@ MT.ui = {}
 -- Table of thread-gated controls: each entry = {panel=, btn=, edit=nil}
 _threadGatedControls = {}
 
+-- Registry of active flash timers (killed on CT reload / form close)
+_flashTimers = {}
+
 --- Wrap a callback in pcall for safe button clicks
 function MT.ui.safeClick(fn)
   return function(...)
@@ -48,8 +51,9 @@ function MT.ui.flashSuccess(panel, btn, origCaption, msg)
   MT.ui.setStatus(msg, 0x008000)
   local t = createTimer(nil)
   t.Interval = 1200
+  _flashTimers[t] = true
   t.OnTimer = function(sender)
-    t.Enabled = false; t.destroy()
+    t.Enabled = false; _flashTimers[t] = nil; t.destroy()
     if not _itemAdderForm then return end
     pcall(function() if _itemAdderForm.Visible then panel.Color = 0xE0E0E0; btn.Caption = origCaption end end)
   end
@@ -63,8 +67,9 @@ function MT.ui.flashFail(panel, btn, origCaption, msg)
   MT.ui.setStatus(msg, 0x0000FF)
   local t = createTimer(nil)
   t.Interval = 1500
+  _flashTimers[t] = true
   t.OnTimer = function(sender)
-    t.Enabled = false; t.destroy()
+    t.Enabled = false; _flashTimers[t] = nil; t.destroy()
     if not _itemAdderForm then return end
     pcall(function() if _itemAdderForm.Visible then panel.Color = 0xE0E0E0; btn.Caption = origCaption end end)
   end

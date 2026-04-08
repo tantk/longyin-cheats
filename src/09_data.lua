@@ -345,8 +345,8 @@ function MT.data.loadForceNames()
       end
     end
   end
-  names[0xFFFFFFFF] = "通用"
-  names[4294967295] = "通用"  -- same as 0xFFFFFFFF in Lua number
+  names[0xFFFFFFFF] = "江湖"
+  names[4294967295] = "江湖"  -- same as 0xFFFFFFFF in Lua number
   MT.data._forceNames = names
   return names
 end
@@ -435,7 +435,7 @@ function MT.data.loadSkillsFull()
       id = tonumber(row[1]) or 0, name = row[2] or "",
       type = tonumber(row[3]) or 0, typeName = row[4] or "",
       rareLv = tonumber(row[5]) or 0, rareName = row[6] or "",
-      forceID = tonumber(row[7]) or 4294967295, forceName = row[8] or "通用",
+      forceID = tonumber(row[7]) or 4294967295, forceName = row[8] or "江湖",
       manaCost = tonumber(row[9]) or 0, baseDmg = tonumber(row[10]) or 0,
       atkRange = row[11] or "", upgrade = row[12] or "",
       upgradeTotal = tonumber(row[13]) or 0, equip = row[14] or "",

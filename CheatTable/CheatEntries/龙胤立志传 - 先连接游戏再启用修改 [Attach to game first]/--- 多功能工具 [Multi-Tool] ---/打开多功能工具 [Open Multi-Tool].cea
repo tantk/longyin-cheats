@@ -483,7 +483,7 @@ do
   cmbSect.Left = MA_PAD + 303; cmbSect.Top = MA_PAD - 3; cmbSect.Width = 100; cmbSect.Height = 24
   cmbSect.Style = csDropDownList; cmbSect.Font.Size = 9
   cmbSect.Items.add("全部 All")
-  cmbSect.Items.add("通用 Generic")
+  cmbSect.Items.add("江湖 Jianghu")
   cmbSect.ItemIndex = 0
 
   -- Dynamic stat column dropdown (prominent position)
@@ -590,7 +590,7 @@ do
     for i, sk in ipairs(_maSkills) do
       _maDisplayCache[i] = {
         tostring(sk.id), sk.name, sk.typeName, sk.rareName,
-        sk.forceName or "通用",
+        sk.forceName or "江湖",
         "",  -- placeholder for dynamic column (filled by OnData)
         sk.manaCost > 0 and string.format("%.0f", sk.manaCost) or "",
         sk.baseDmg > 0 and string.format("%.0f", sk.baseDmg) or "",
@@ -662,7 +662,7 @@ do
     for i, sk in ipairs(_maSkills) do
       if catIdx > 0 and sk.typeName ~= catOpts[catIdx + 1] then goto skip end
       if rareIdx > 0 and sk.rareLv ~= (rareIdx - 1) then goto skip end
-      if sectIdx == 1 and sk.forceName ~= "通用" then goto skip end
+      if sectIdx == 1 and sk.forceName ~= "江湖" then goto skip end
       if sectIdx > 1 then
         if sk.forceName ~= cmbSect.Items[sectIdx] then goto skip end
       end
@@ -674,6 +674,7 @@ do
       ::skip::
     end
     lv.Items.Count = #_maFilteredMap
+    lv.ItemIndex = -1  -- clear selection to prevent stale Add Book
     lv.Repaint()
     lblCount.Caption = string.format("%d / %d skills", #_maFilteredMap, #_maSkills)
   end
@@ -781,7 +782,7 @@ do
     if not sk then return end
 
     local lines = {}
-    lines[#lines+1] = string.format("[%s]  %s · %s · %s", sk.name, sk.rareName, sk.typeName, sk.forceName or "通用")
+    lines[#lines+1] = string.format("[%s]  %s · %s · %s", sk.name, sk.rareName, sk.typeName, sk.forceName or "江湖")
     lines[#lines+1] = string.rep("-", 50)
     lines[#lines+1] = sk.desc
     lines[#lines+1] = ""
@@ -866,11 +867,11 @@ _maTabTimer = createTimer()
       -- Populate sect filter from skill data (forceName field is in the .dat)
       cmbSect.Items.clear()
       cmbSect.Items.add("全部 All")
-      cmbSect.Items.add("通用")
+      cmbSect.Items.add("江湖")
       local added = {}
       for _, sk in ipairs(_maSkills) do
         local fn = sk.forceName
-        if fn and fn ~= "通用" and fn ~= "" and not added[fn] then
+        if fn and fn ~= "江湖" and fn ~= "" and not added[fn] then
           cmbSect.Items.add(fn)
           added[fn] = true
         end

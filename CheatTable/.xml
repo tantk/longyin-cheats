@@ -14,12 +14,21 @@ if _skillLoaderTimer then pcall(function() _skillLoaderTimer.Enabled = false; _s
 if _evtLoaderTimer then pcall(function() _evtLoaderTimer.Enabled = false; _evtLoaderTimer.destroy() end) end
 -- NOTE: do NOT kill _autoConnectTimer — it's from autoload_save.lua and needs to survive CT load
 if _staleCheckTimer then pcall(function() _staleCheckTimer.Enabled = false; _staleCheckTimer.destroy() end) end
+-- Kill orphan flash timers
+if _flashTimers then
+  for t in pairs(_flashTimers) do pcall(function() t.Enabled = false; t.destroy() end) end
+end
+_flashTimers = {}
+-- Destroy stale form from previous session
+if _itemAdderForm then pcall(function() _itemAdderForm.destroy() end) end
 _maLoaderTimer = nil
 _maTabTimer = nil
 _skillLoaderTimer = nil
 _evtLoaderTimer = nil
 -- _autoConnectTimer preserved for autoload_save.lua
 _staleCheckTimer = nil
+_itemAdderForm = nil
+_mtStatusLbl = nil
 
 errorOnLookupFailure(false)
 MT = {}
@@ -2124,6 +2133,9 @@ MT.ui = {}
 -- Table of thread-gated controls: each entry = {panel=, btn=, edit=nil}
 _threadGatedControls = {}
 
+-- Registry of active flash timers (killed on CT reload / form close)
+_flashTimers = {}
+
 --- Wrap a callback in pcall for safe button clicks
 function MT.ui.safeClick(fn)
   return function(...)
@@ -2165,8 +2177,9 @@ function MT.ui.flashSuccess(panel, btn, origCaption, msg)
   MT.ui.setStatus(msg, 0x008000)
   local t = createTimer(nil)
   t.Interval = 1200
+  _flashTimers[t] = true
   t.OnTimer = function(sender)
-    t.Enabled = false; t.destroy()
+    t.Enabled = false; _flashTimers[t] = nil; t.destroy()
     if not _itemAdderForm then return end
     pcall(function() if _itemAdderForm.Visible then panel.Color = 0xE0E0E0; btn.Caption = origCaption end end)
   end
@@ -2180,8 +2193,9 @@ function MT.ui.flashFail(panel, btn, origCaption, msg)
   MT.ui.setStatus(msg, 0x0000FF)
   local t = createTimer(nil)
   t.Interval = 1500
+  _flashTimers[t] = true
   t.OnTimer = function(sender)
-    t.Enabled = false; t.destroy()
+    t.Enabled = false; _flashTimers[t] = nil; t.destroy()
     if not _itemAdderForm then return end
     pcall(function() if _itemAdderForm.Visible then panel.Color = 0xE0E0E0; btn.Caption = origCaption end end)
   end
@@ -2749,8 +2763,8 @@ function MT.data.loadForceNames()
       end
     end
   end
-  names[0xFFFFFFFF] = "通用"
-  names[4294967295] = "通用"  -- same as 0xFFFFFFFF in Lua number
+  names[0xFFFFFFFF] = "江湖"
+  names[4294967295] = "江湖"  -- same as 0xFFFFFFFF in Lua number
   MT.data._forceNames = names
   return names
 end
@@ -2839,7 +2853,7 @@ function MT.data.loadSkillsFull()
       id = tonumber(row[1]) or 0, name = row[2] or "",
       type = tonumber(row[3]) or 0, typeName = row[4] or "",
       rareLv = tonumber(row[5]) or 0, rareName = row[6] or "",
-      forceID = tonumber(row[7]) or 4294967295, forceName = row[8] or "通用",
+      forceID = tonumber(row[7]) or 4294967295, forceName = row[8] or "江湖",
       manaCost = tonumber(row[9]) or 0, baseDmg = tonumber(row[10]) or 0,
       atkRange = row[11] or "", upgrade = row[12] or "",
       upgradeTotal = tonumber(row[13]) or 0, equip = row[14] or "",
