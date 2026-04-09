@@ -1307,12 +1307,12 @@ function MT.hook.discover(fastMode)
   S = MT.hook.S
   S.base = newBase
   log("S.base = " .. toHex(S.base))
-  if not S.base or S.base == 0 then log("失败: GameAssembly.dll未加载 GA not loaded"); return false, "GameAssembly.dll not loaded" end
-  if not MT.hook.allocWorkArea() then log("失败: 分配工作区失败 alloc work area failed"); return false, "Work area alloc failed" end
+  if not S.base or S.base == 0 then log("失败: GameAssembly.dll未加载 GA not loaded"); return false, "请先用CE连接游戏 Attach CE to game first" end
+  if not MT.hook.allocWorkArea() then log("失败: 分配工作区失败 alloc work area failed"); return false, "内存分配失败 Memory alloc failed" end
 
   local classFromName = getAddress("GameAssembly.il2cpp_class_from_name")
   local objNew = getAddress("GameAssembly.il2cpp_object_new")
-  if not objNew or objNew == 0 then log("失败: il2cpp导出函数缺失 il2cpp_object_new missing"); return false, "il2cpp exports missing" end
+  if not objNew or objNew == 0 then log("失败: il2cpp导出函数缺失 il2cpp_object_new missing"); return false, "il2cpp导出缺失 请重启CE IL2CPP exports missing" end
   S.objNew = objNew
 
   -- Use executeCodeEx (proven safe) instead of shellExec/createRemoteThread (crashes)
@@ -1332,13 +1332,13 @@ function MT.hook.discover(fastMode)
   log("About to findClass GameController...")
   local gcClass = findClass("GameController")
   log("gcClass=" .. toHex(gcClass or 0))
-  if not gcClass or gcClass == 0 then log("失败: GameController类未找到 GC class not found"); return false, "GameController not found" end
+  if not gcClass or gcClass == 0 then log("失败: GameController类未找到 GC class not found"); return false, "游戏类未找到 请重启CE GameController not found" end
   log("About to findClass GameDataController...")
   local gdcClass = findClass("GameDataController")
   log("gdcClass=" .. toHex(gdcClass or 0))
 
   local gc = readQword(c.gc.static + c.gc.instOff)
-  if not gc or gc == 0 then log("失败: GC实例为空——请先加载存档 GC._instance null"); return false, "GC._instance null (load save)" end
+  if not gc or gc == 0 then log("失败: GC实例为空——请先加载存档 GC._instance null"); return false, "请先加载存档再连接 Load a save first" end
   S.gc = gc
   log("gc=" .. toHex(gc))
 
@@ -1373,13 +1373,13 @@ function MT.hook.discover(fastMode)
   end
 
   local wd = readQword(gc + 0x20)
-  if not wd or wd == 0 then log("失败: 世界数据为空 WorldData null"); return false, "WorldData null" end
+  if not wd or wd == 0 then log("失败: 世界数据为空 WorldData null"); return false, "世界数据为空 请加载存档 WorldData null" end
   local hl = readQword(wd + 0x50)
-  if not hl or hl == 0 then log("失败: 角色列表为空 HerosList null"); return false, "HerosList null" end
+  if not hl or hl == 0 then log("失败: 角色列表为空 HerosList null"); return false, "角色列表为空 请加载存档 HerosList null" end
   local ip = readQword(hl + 0x10)
   if not ip or ip == 0 then log("失败: 角色数据为空 HerosList items null"); return false, "HerosList items null" end
   local ph = readQword(ip + 0x20)
-  if not ph or ph == 0 then log("失败: 主角未找到 Hero not found"); return false, "Hero not found" end
+  if not ph or ph == 0 then log("失败: 主角未找到 Hero not found"); return false, "主角未找到 请加载存档 Hero not found" end
   S.hero = ph
   local ild = readQword(ph + 0x220)
   if not ild or ild == 0 then return false, "ItemListData null" end
@@ -1397,7 +1397,7 @@ function MT.hook.discover(fastMode)
       if not S.itemKlass then S.itemKlass = readQword(it) end
     end
   end
-  if not S.itemKlass then log("失败: 背包中无物品 No items in inventory"); return false, "No items in inventory" end
+  if not S.itemKlass then log("失败: 背包中无物品 No items in inventory"); return false, "背包为空 请先获得一个物品 No items in inventory" end
   log("数据正常 Data OK: wd=" .. toHex(wd) .. " hero=" .. toHex(ph) .. " items=" .. ic)
 
   -- Try loading RVAs from cache (keyed by GA DLL size)
