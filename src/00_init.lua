@@ -56,10 +56,8 @@ end
 
 local function _mtObjType(v)
   local t = type(v)
-  if t == "userdata" then
-    local ok, className = pcall(function() return v.ClassName end)
-    if ok and className then return "userdata:" .. tostring(className) end
-  end
+  -- Do NOT access .ClassName on userdata — can trigger C-level access violation
+  -- on destroyed Delphi objects that pcall cannot catch
   return t
 end
 
@@ -71,7 +69,8 @@ local function _mtTry(tag, fn)
   return ok, err
 end
 
--- Rotate diag log: keep last 2 sessions so with new one there are 3 total
+-- Rotate diag log: keep N-1 old sessions + 1 new = N total
+local DIAG_KEEP_SESSIONS = 3
 pcall(function()
   local f = _mtOpenDiagFile()
   if not f then return end
@@ -80,7 +79,7 @@ pcall(function()
   if not rf then return end
   local content = rf:read("*a")
   rf:close()
-  -- Split by session markers
+  if #content == 0 then return end
   local sessions = {}
   local cur = ""
   for line in content:gmatch("[^\n]+") do
@@ -92,11 +91,11 @@ pcall(function()
     end
   end
   if #cur > 0 then sessions[#sessions + 1] = cur end
-  -- Keep last 2 sessions (new one will be #3)
-  if #sessions > 2 then
+  local keep = DIAG_KEEP_SESSIONS - 1  -- new session will be added after
+  if #sessions > keep then
     local wf = io.open(_mtDiagPath, "w")
     if wf then
-      for i = #sessions - 1, #sessions do wf:write(sessions[i]) end
+      for i = #sessions - keep + 1, #sessions do wf:write(sessions[i]) end
       wf:close()
     end
   end
