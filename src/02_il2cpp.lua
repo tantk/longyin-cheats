@@ -186,7 +186,6 @@ function MT.il2cpp.init()
   local gaSize = getModuleSize("GameAssembly.dll") or 0
   local verMsg = string.format("[Long Yin Li Zhi Zhuan] Version %s %s (GA: %d bytes, %d/5 classes)", verStr, fixStr, gaSize, found)
   if MT.diag then MT.diag(verMsg) end
-  if MT.log then MT.log(verMsg) end
 
   return _il2cppCache
 end
