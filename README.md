@@ -81,6 +81,36 @@ Browse and spawn 106 game events with category filter, search, and difficulty co
 4. Click "Connect" in the Multi-Tool form
 5. Use the tabs to access cheats
 
+## Troubleshooting
+
+If you see an error when loading the CT or opening the Multi-Tool:
+
+1. **Close CE completely** (not just reload) → reopen → load CT again
+2. If the error persists, enable **"复制加载诊断 [Copy Load Diagnostics]"** in the address list — this copies diagnostic info to your clipboard
+3. Paste the diagnostics when reporting the issue
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| "修改器加载出错" popup on CT load | A Lua module failed to load | Close CE, reopen, load CT |
+| "修改器加载失败" when enabling Multi-Tool | LuaScript didn't initialize | Close CE, reopen, load CT |
+| "多功能工具创建失败" | Form creation error | Screenshot the error and report |
+| Lua Engine window pops up | Old version — fixed in latest | Re-download from Releases |
+
+## 故障排除
+
+加载CT或打开多功能工具时出错：
+
+1. **完全关闭CE**（不是重新加载）→ 重新打开 → 再次加载CT
+2. 如果错误持续，在地址列表中启用 **"复制加载诊断 [Copy Load Diagnostics]"** — 诊断信息会复制到剪贴板
+3. 反馈问题时粘贴诊断信息
+
+| 错误 | 原因 | 解决方法 |
+|------|------|----------|
+| "修改器加载出错" 弹窗 | Lua模块加载失败 | 关闭CE，重新打开，加载CT |
+| "修改器加载失败" 启用时出现 | 脚本未初始化 | 关闭CE，重新打开，加载CT |
+| "多功能工具创建失败" | 窗口创建出错 | 截图错误信息并反馈 |
+| 弹出Lua Engine窗口 | 旧版本问题 | 重新下载最新版 |
+
 ## Building from Source
 
 The CT is built from modular Lua source files using [CE2FS](https://pypi.org/project/ce2fs/):
