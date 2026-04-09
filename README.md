@@ -83,22 +83,41 @@ Browse and spawn 106 game events with category filter, search, and difficulty co
 
 ## Troubleshooting
 
+**Make sure you load a save before clicking Connect.** The title screen does not have the game data needed — you must be in-game.
+
 If you see an error when loading the CT or opening the Multi-Tool:
 
 1. **Close CE completely** (not just reload) → reopen → load CT again
-2. If the error persists, use one of these to copy diagnostic info:
+2. If the error persists, copy diagnostic info using one of these methods:
    - **In the address list**: enable **"复制加载诊断 [Copy Load Diagnostics]"** — works even if the Multi-Tool fails to open
    - **In the Multi-Tool form**: click the **"复制诊断 [Copy Diag]"** button (top right)
-3. Paste the copied diagnostics when reporting the issue (Ctrl+V into forum/chat)
+3. Paste the copied diagnostics when reporting the issue (Ctrl+V into forum/chat — fits within Bilibili's 1000 character limit)
+
+The diagnostic output shows exactly where the connection failed:
+```
+=== LongYin Diag ===
+2026-04-10 12:00:00 PID:12345
+===== CT LOAD START =====
+[il2cpp] classes: GC=Y GDC=Y GD=Y HD=Y BC=Y
+[Long Yin Li Zhi Zhuan] Version 1.0.0 f8.2 (GA: 36200448 bytes, 5/5 classes)
+数据正常 Data OK: wd=1A2B hero=3C4D items=42
+钩子安装成功 Hook installed OK
+```
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| "修改器加载出错" popup on CT load | A Lua module failed to load | Close CE, reopen, load CT |
-| "修改器加载失败" when enabling Multi-Tool | LuaScript didn't initialize | Close CE, reopen, load CT |
-| "多功能工具创建失败" | Form creation error | Screenshot the error and report |
-| Lua Engine window pops up | Old version — fixed in latest | Re-download from Releases |
+| "请先加载存档再连接" | Not in-game yet | Load a save first, then click Connect |
+| "请先用CE连接游戏" | CE not attached to game | File → Open Process → select the game |
+| "修改器加载出错" popup | A Lua module failed to load | Close CE completely, reopen, load CT |
+| "修改器加载失败" | LuaScript didn't initialize | Close CE completely, reopen, load CT |
+| "多功能工具创建失败" | Form creation error | Screenshot the error and report it |
+| 2/5 classes | Old version (buffer bug) | Re-download the latest release |
+
+Compatible with BepInEx and other IL2CPP mods.
 
 ## 故障排除
+
+**请先加载存档再点连接。** 标题画面没有游戏数据，必须进入游戏后才能连接。
 
 加载CT或打开多功能工具时出错：
 
@@ -106,14 +125,18 @@ If you see an error when loading the CT or opening the Multi-Tool:
 2. 如果错误持续，使用以下方式复制诊断信息：
    - **地址列表中**：启用 **"复制加载诊断 [Copy Load Diagnostics]"** — 即使多功能工具无法打开也能使用
    - **多功能工具窗口中**：点击右上角 **"复制诊断 [Copy Diag]"** 按钮
-3. 反馈问题时粘贴诊断信息（Ctrl+V 到论坛/聊天）
+3. 反馈问题时粘贴诊断信息（Ctrl+V 到论坛/聊天 — 已压缩至B站1000字评论限制以内）
 
 | 错误 | 原因 | 解决方法 |
 |------|------|----------|
-| "修改器加载出错" 弹窗 | Lua模块加载失败 | 关闭CE，重新打开，加载CT |
-| "修改器加载失败" 启用时出现 | 脚本未初始化 | 关闭CE，重新打开，加载CT |
+| "请先加载存档再连接" | 还在标题画面 | 先加载存档再点连接 |
+| "请先用CE连接游戏" | CE未连接游戏进程 | 文件→打开进程→选择游戏 |
+| "修改器加载出错" 弹窗 | Lua模块加载失败 | 完全关闭CE，重新打开，加载CT |
+| "修改器加载失败" | 脚本未初始化 | 完全关闭CE，重新打开，加载CT |
 | "多功能工具创建失败" | 窗口创建出错 | 截图错误信息并反馈 |
-| 弹出Lua Engine窗口 | 旧版本问题 | 重新下载最新版 |
+| 2/5 classes | 旧版本（缓冲区bug） | 重新下载最新版 |
+
+兼容BepInEx及其他IL2CPP模组。
 
 ## Building from Source
 
