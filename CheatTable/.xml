@@ -1286,12 +1286,12 @@ function MT.hook.discover(fastMode)
   S = MT.hook.S
   S.base = getAddress("GameAssembly.dll")
   log("S.base = " .. toHex(S.base))
-  if not S.base or S.base == 0 then log("FAIL: GA not loaded"); return false, "GameAssembly.dll not loaded" end
-  if not MT.hook.allocWorkArea() then log("FAIL: alloc work area"); return false, "Work area alloc failed" end
+  if not S.base or S.base == 0 then log("失败: GameAssembly.dll未加载 GA not loaded"); return false, "GameAssembly.dll not loaded" end
+  if not MT.hook.allocWorkArea() then log("失败: 分配工作区失败 alloc work area failed"); return false, "Work area alloc failed" end
 
   local classFromName = getAddress("GameAssembly.il2cpp_class_from_name")
   local objNew = getAddress("GameAssembly.il2cpp_object_new")
-  if not objNew or objNew == 0 then log("FAIL: il2cpp_object_new missing"); return false, "il2cpp exports missing" end
+  if not objNew or objNew == 0 then log("失败: il2cpp导出函数缺失 il2cpp_object_new missing"); return false, "il2cpp exports missing" end
   S.objNew = objNew
 
   -- Use executeCodeEx (proven safe) instead of shellExec/createRemoteThread (crashes)
@@ -1311,13 +1311,13 @@ function MT.hook.discover(fastMode)
   log("About to findClass GameController...")
   local gcClass = findClass("GameController")
   log("gcClass=" .. toHex(gcClass or 0))
-  if not gcClass or gcClass == 0 then log("FAIL: GC class not found"); return false, "GameController not found" end
+  if not gcClass or gcClass == 0 then log("失败: GameController类未找到 GC class not found"); return false, "GameController not found" end
   log("About to findClass GameDataController...")
   local gdcClass = findClass("GameDataController")
   log("gdcClass=" .. toHex(gdcClass or 0))
 
   local gc = readQword(c.gc.static + c.gc.instOff)
-  if not gc or gc == 0 then log("FAIL: GC._instance null — need to load a save first"); return false, "GC._instance null (load save)" end
+  if not gc or gc == 0 then log("失败: GC实例为空——请先加载存档 GC._instance null"); return false, "GC._instance null (load save)" end
   S.gc = gc
   log("gc=" .. toHex(gc))
 
@@ -1352,13 +1352,13 @@ function MT.hook.discover(fastMode)
   end
 
   local wd = readQword(gc + 0x20)
-  if not wd or wd == 0 then log("FAIL: WorldData null"); return false, "WorldData null" end
+  if not wd or wd == 0 then log("失败: 世界数据为空 WorldData null"); return false, "WorldData null" end
   local hl = readQword(wd + 0x50)
-  if not hl or hl == 0 then log("FAIL: HerosList null"); return false, "HerosList null" end
+  if not hl or hl == 0 then log("失败: 角色列表为空 HerosList null"); return false, "HerosList null" end
   local ip = readQword(hl + 0x10)
-  if not ip or ip == 0 then log("FAIL: HerosList items null"); return false, "HerosList items null" end
+  if not ip or ip == 0 then log("失败: 角色数据为空 HerosList items null"); return false, "HerosList items null" end
   local ph = readQword(ip + 0x20)
-  if not ph or ph == 0 then log("FAIL: Hero not found"); return false, "Hero not found" end
+  if not ph or ph == 0 then log("失败: 主角未找到 Hero not found"); return false, "Hero not found" end
   S.hero = ph
   local ild = readQword(ph + 0x220)
   if not ild or ild == 0 then return false, "ItemListData null" end
@@ -1367,7 +1367,7 @@ function MT.hook.discover(fastMode)
   log("hero=" .. toHex(ph) .. " ild=" .. toHex(ild))
 
   local ail = readQword(S.ild + 0x28)
-  if not ail or ail == 0 then log("FAIL: allItem list null"); return false, "allItem list null" end
+  if not ail or ail == 0 then log("失败: 物品列表为空 allItem list null"); return false, "allItem list null" end
   local ic = readInteger(ail + 0x18)
   local ia = readQword(ail + 0x10)
   for i = 0, ic - 1 do
@@ -1376,8 +1376,8 @@ function MT.hook.discover(fastMode)
       if not S.itemKlass then S.itemKlass = readQword(it) end
     end
   end
-  if not S.itemKlass then log("FAIL: No items in inventory (empty?)"); return false, "No items in inventory" end
-  log("Data OK: wd=" .. toHex(wd) .. " hero=" .. toHex(ph) .. " items=" .. ic)
+  if not S.itemKlass then log("失败: 背包中无物品 No items in inventory"); return false, "No items in inventory" end
+  log("数据正常 Data OK: wd=" .. toHex(wd) .. " hero=" .. toHex(ph) .. " items=" .. ic)
 
   -- Try loading RVAs from cache (keyed by GA DLL size)
   local gaSize = getModuleSize("GameAssembly.dll") or 0
@@ -1532,13 +1532,13 @@ function MT.hook.discover(fastMode)
   -- Count resolved RVAs
   local rvaCount = 0
   for _ in pairs(RVA) do rvaCount = rvaCount + 1 end
-  log("Resolved " .. rvaCount .. " RVAs")
+  log("已解析 Resolved " .. rvaCount .. " 个RVA地址")
 
   -- Install main-thread hook
-  log("Installing main-thread hook...")
+  log("正在安装主线程钩子 Installing main-thread hook...")
   local hookOk, hookErr = MT.hook.installMainThreadHook()
-  if not hookOk then log("FAIL: hook install: " .. tostring(hookErr)); return false, "Hook: " .. (hookErr or "unknown") end
-  log("Hook installed OK")
+  if not hookOk then log("失败: 钩子安装失败 hook install: " .. tostring(hookErr)); return false, "Hook: " .. (hookErr or "unknown") end
+  log("钩子安装成功 Hook installed OK")
 
   local cmdBuf = getAddress("cmdBuf")
   S.cmdBuf = cmdBuf
