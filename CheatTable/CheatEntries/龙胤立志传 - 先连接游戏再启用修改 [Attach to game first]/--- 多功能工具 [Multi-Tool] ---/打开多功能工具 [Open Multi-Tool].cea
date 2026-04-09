@@ -1,6 +1,10 @@
 [ENABLE]
 {$lua}
 if syntaxcheck then return end
+if type(MT) ~= "table" or not MT.ui then
+  showMessage("请关闭CE后重新打开再加载CT\nPlease close CE and reopen, then load CT.")
+  return
+end
 if _itemAdderForm then _itemAdderForm.destroy(); _itemAdderForm = nil end
 
 -- ============================================================
