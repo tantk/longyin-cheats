@@ -27,7 +27,7 @@ A form-based Cheat Engine table for **LongYinLiZhiZhuan** (龙胤立志传), a m
 
 ## Requirements
 
-- [Cheat Engine 7.6+](https://cheatengine.org)
+- [Cheat Engine 7.4+](https://cheatengine.org) (7.6+ recommended)
 - LongYinLiZhiZhuan (Steam)
 
 ## Usage
@@ -102,7 +102,7 @@ This project is provided for educational and personal use. Use at your own risk.
 
 ## 使用要求
 
-- [Cheat Engine 7.6+](https://cheatengine.org)
+- [Cheat Engine 7.4+](https://cheatengine.org) (7.6+ recommended)
 - 龙胤立志传（Steam版）
 
 ## 使用方法
