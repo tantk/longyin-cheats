@@ -1308,12 +1308,18 @@ function MT.hook.discover(fastMode)
   local S = MT.hook.S
   local RVA = MT.hook.RVA
   local equipDBs = MT.hook.equipDBs
-  -- Force clear all caches to prevent stale pointer issues
-  _il2cppCache = nil
+  -- Only clear IL2CPP cache if GA base changed (game restarted)
+  local newBase = getAddress("GameAssembly.dll")
+  if _il2cppCache and _il2cppCache._gaBase == newBase then
+    log("IL2CPP cache valid (base unchanged)")
+  else
+    _il2cppCache = nil
+    log("IL2CPP cache cleared (base changed or first connect)")
+  end
   MT.hook._aobsResolved = false
   MT.hook.S = {}
   S = MT.hook.S
-  S.base = getAddress("GameAssembly.dll")
+  S.base = newBase
   log("S.base = " .. toHex(S.base))
   if not S.base or S.base == 0 then log("失败: GameAssembly.dll未加载 GA not loaded"); return false, "GameAssembly.dll not loaded" end
   if not MT.hook.allocWorkArea() then log("失败: 分配工作区失败 alloc work area failed"); return false, "Work area alloc failed" end
