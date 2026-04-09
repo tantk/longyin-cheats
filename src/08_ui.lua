@@ -96,7 +96,7 @@ function MT.ui.makeOneOff(parent, x, y, w, h, caption, callback, needsThread)
   local b = createButton(pnl)
   b.Left = 2; b.Top = 2; b.Width = w - 4; b.Height = h - 4
   b.Caption = caption
-  b.Font.Size = 9
+
 
   if needsThread then
     b.Enabled = false
@@ -136,7 +136,7 @@ function MT.ui.makeToggle(parent, x, y, w, h, caption, enableFn, disableFn, need
   local b = createButton(pnl)
   b.Left = 2; b.Top = 2; b.Width = w - 4; b.Height = h - 4
   b.Caption = caption
-  b.Font.Size = 9
+
 
   local isOn = false
 
@@ -184,14 +184,14 @@ function MT.ui.makeInput(parent, x, y, w, h, caption, editW, default, callback, 
   local edt = createEdit(pnl)
   edt.Left = 4; edt.Top = 4; edt.Width = editW; edt.Height = h - 8
   edt.Text = default or ""
-  edt.Font.Size = 9
+
   MT.ui.numericOnly(edt)
 
   local btnW = w - editW - 10
   local b = createButton(pnl)
   b.Left = editW + 6; b.Top = 2; b.Width = btnW; b.Height = h - 4
   b.Caption = caption
-  b.Font.Size = 9
+
 
   if needsThread then
     b.Enabled = false
@@ -233,14 +233,14 @@ function MT.ui.makeToggleInput(parent, x, y, w, h, caption, editW, default, enab
   local edt = createEdit(pnl)
   edt.Left = 4; edt.Top = 4; edt.Width = editW; edt.Height = h - 8
   edt.Text = default or ""
-  edt.Font.Size = 9
+
   MT.ui.numericOnly(edt)
 
   local btnW = w - editW - 10
   local b = createButton(pnl)
   b.Left = editW + 6; b.Top = 2; b.Width = btnW; b.Height = h - 4
   b.Caption = caption
-  b.Font.Size = 9
+
 
   local isOn = false
 
