@@ -4,6 +4,40 @@
 -- ============================================================
 MT.data = {}
 
+-- Shared temp path with multi-layer fallback (same chain as diag system)
+-- Tries: getTempFolder → TEMP → TMP → APPDATA → CE dir → C:\temp → CWD
+function MT.getTempPath()
+  if MT._tempPath then return MT._tempPath end
+  local candidates = {}
+  if type(getTempFolder) == "function" then
+    local ok, p = pcall(getTempFolder)
+    if ok and p then candidates[#candidates+1] = p end
+  end
+  for _, env in ipairs({"TEMP", "TMP", "APPDATA"}) do
+    local v = os.getenv(env)
+    if v and #v > 0 then candidates[#candidates+1] = v end
+  end
+  if type(getCheatEngineDir) == "function" then
+    local ok, p = pcall(getCheatEngineDir)
+    if ok and p then candidates[#candidates+1] = p end
+  end
+  candidates[#candidates+1] = "C:\\temp"
+  candidates[#candidates+1] = "."
+  for _, base in ipairs(candidates) do
+    local sep = (base:sub(-1) == "\\" or base:sub(-1) == "/") and "" or "\\"
+    local testPath = base .. sep .. "ce_tmp_test.tmp"
+    local f = io.open(testPath, "w")
+    if f then
+      f:close()
+      os.remove(testPath)
+      MT._tempPath = base .. sep
+      return MT._tempPath
+    end
+  end
+  MT._tempPath = ".\\"
+  return MT._tempPath
+end
+
 -- Load a pipe-delimited data file from embedded table files.
 -- Returns a list of tables, each with fields split by "|".
 -- First field is always converted to number (the ID).
@@ -24,7 +58,7 @@ function MT.data.loadFile(filename)
   if not content then
     local tf = findTableFile(filename)
     if tf then
-      local tmpPath = (type(getTempFolder) == "function" and getTempFolder() or (os.getenv("TEMP") or ".") .. "\\") .. filename
+      local tmpPath = MT.getTempPath() .. filename
       tf.saveToFile(tmpPath)
       local f = io.open(tmpPath, "r")
       if f then content = f:read("*a"); f:close() end
@@ -409,7 +443,7 @@ function MT.data.loadSkillsFull()
   if not content then
     local tf = findTableFile("skills_full.lua")
     if tf then
-      local tmp = (type(getTempFolder) == "function" and getTempFolder() or (os.getenv("TEMP") or ".") .. "\\") .. "skills_full.lua"
+      local tmp = MT.getTempPath() .. "skills_full.lua"
       tf.saveToFile(tmp)
       local f = io.open(tmp, "r")
       if f then content = f:read("*a"); f:close() end
