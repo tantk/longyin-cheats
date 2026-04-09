@@ -17,6 +17,10 @@ local function _mtDiagCandidates()
   local function add(base)
     if type(base) == "string" and base ~= "" then out[#out + 1] = base end
   end
+  if type(getTempFolder) == "function" then
+    local ok, p = pcall(getTempFolder)
+    if ok and p then add(p) end
+  end
   add(os.getenv("TEMP"))
   add(os.getenv("TMP"))
   add(os.getenv("APPDATA"))

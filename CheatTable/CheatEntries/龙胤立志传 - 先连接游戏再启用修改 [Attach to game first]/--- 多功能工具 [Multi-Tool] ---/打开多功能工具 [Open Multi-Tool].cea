@@ -110,7 +110,7 @@ btnCopyDiag.OnClick = function(sender)
       end
     end
     if not diagPath or diagPath == "" then
-      diagPath = (os.getenv("TEMP") or ".") .. "\\ce_mt_load_diag.log"
+      diagPath = (type(MT) == "table" and MT.getTempPath and MT.getTempPath() or (os.getenv("TEMP") or "C:\\temp") .. "\\") .. "ce_mt_load_diag.log"
     end
     -- Keep under 1000 chars (Bilibili comment limit)
     local tail, tailErr = readDiagTail(diagPath, 40, 600)
