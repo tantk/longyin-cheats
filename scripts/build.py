@@ -133,6 +133,7 @@ def build():
         'end)\n' + \
         'if not _mtLoadOk then\n' + \
         '  MT._loadError = tostring(_mtLoadErr)\n' + \
+        '  if MT.diag then pcall(MT.diag, "[load] " .. MT._loadError) end\n' + \
         '  print("[MT] LOAD ERROR: " .. MT._loadError)\n' + \
         '  showMessage("修改器加载出错 / Load error:\\n\\n" .. MT._loadError)\n' + \
         'end\n'
