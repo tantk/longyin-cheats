@@ -137,6 +137,8 @@ function MT.data.readSpeDict(ptr, showPct)
   local total = 0
   for i = 0, cnt - 1 do
     local base = entries + 0x20 + i * 16
+    local hash = readInteger(base)  -- skip tombstoned entries (hashCode < 0)
+    if not hash or hash < 0 then goto nextEntry end
     local key = readInteger(base + 8)
     local val = readFloat(base + 12)
     if statNames[key] then
@@ -150,6 +152,7 @@ function MT.data.readSpeDict(ptr, showPct)
         parts[#parts + 1] = statNames[key] .. sign .. string.format("%.0f", val)
       end
     end
+    ::nextEntry::
   end
   return table.concat(parts, ", "), total
 end
@@ -247,7 +250,7 @@ function MT.data.loadLiveSkills()
     local ai = readQword(atkList + 0x10)
     local ar = readQword(ai + 0x20)
     if not ar or ar == 0 then return "" end
-    return readInteger(ar + 0x14) .. "-" .. readInteger(ar + 0x18)
+    return (readInteger(ar + 0x14) or 0) .. "-" .. (readInteger(ar + 0x18) or 0)
   end
 
   local function readSpeEffects(sk)

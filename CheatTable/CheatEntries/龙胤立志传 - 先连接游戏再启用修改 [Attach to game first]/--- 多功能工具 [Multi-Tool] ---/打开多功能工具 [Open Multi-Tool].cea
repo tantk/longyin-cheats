@@ -1548,12 +1548,20 @@ _itemAdderForm = frm
 frm.OnClose = function(sender, action)
   _itemAdderForm = nil
   _mtStatusLbl = nil
+  -- Kill named timers
   local timers = {_maTabTimer, _evtLoaderTimer}
   for _, t in ipairs(timers) do
-    if t then pcall(function() t.Enabled = false; t.destroy() end) end
+    if t then pcall(function() t.Enabled = false end) end
   end
   _maTabTimer = nil
   _evtLoaderTimer = nil
+  -- Kill flash timers (short-lived but can fire after form destroyed)
+  if type(_flashTimers) == "table" then
+    for t in pairs(_flashTimers) do pcall(function() t.Enabled = false end) end
+  end
+  _flashTimers = {}
+  -- Kill battle speed timer if active
+  pcall(MT.cheats.battle.battleSpeedDisable)
   _threadGatedControls = {}
   return caFree
 end

@@ -56,14 +56,16 @@ function MT.cheats.sect.memberLimitEnable(newLimit)
   local fdClass = c.findClass("ForceData")
   if not fdClass then error("ForceData类未找到 ForceData class not found") end
   local gmfn = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
-  local nm = allocateMemory(64)
+  local nm = allocateMemory(128)
 
   -- Resolve BOTH methods before patching anything (atomic: both or neither)
+  writeBytes(nm, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
   writeString(nm, "GetMaxHeroNum")
   local mi1 = executeCodeEx(0, nil, gmfn, fdClass, nm, 0)
   if not mi1 or mi1 == 0 then deAlloc(nm); error("GetMaxHeroNum未找到 not found") end
   local target1 = readQword(mi1)
 
+  writeBytes(nm, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
   writeString(nm, "PopulationNotFull")
   local mi2 = executeCodeEx(0, nil, gmfn, fdClass, nm, 0)
   if not mi2 or mi2 == 0 then deAlloc(nm); error("PopulationNotFull未找到 not found") end

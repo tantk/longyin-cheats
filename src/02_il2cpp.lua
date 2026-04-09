@@ -127,7 +127,9 @@ function MT.il2cpp.init()
   -- Lazy resolver for classes not yet initialized
   _il2cppCache.findClass = function(name)
     local ns2 = allocateMemory(16); writeString(ns2, "")
-    local cn2 = allocateMemory(64); writeString(cn2, name)
+    local cn2 = allocateMemory(128)
+    writeBytes(cn2, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+    writeString(cn2, name)
     local k = executeCodeEx(0, nil, _il2cppCache._cfn, _il2cppCache.img, ns2, cn2)
     deAlloc(ns2); deAlloc(cn2)
     return k ~= 0 and k or nil

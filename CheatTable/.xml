@@ -301,7 +301,9 @@ function MT.il2cpp.init()
   -- Lazy resolver for classes not yet initialized
   _il2cppCache.findClass = function(name)
     local ns2 = allocateMemory(16); writeString(ns2, "")
-    local cn2 = allocateMemory(64); writeString(cn2, name)
+    local cn2 = allocateMemory(128)
+    writeBytes(cn2, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+    writeString(cn2, name)
     local k = executeCodeEx(0, nil, _il2cppCache._cfn, _il2cppCache.img, ns2, cn2)
     deAlloc(ns2); deAlloc(cn2)
     return k ~= 0 and k or nil
@@ -3077,6 +3079,8 @@ function MT.data.readSpeDict(ptr, showPct)
   local total = 0
   for i = 0, cnt - 1 do
     local base = entries + 0x20 + i * 16
+    local hash = readInteger(base)  -- skip tombstoned entries (hashCode &lt; 0)
+    if not hash or hash &lt; 0 then goto nextEntry end
     local key = readInteger(base + 8)
     local val = readFloat(base + 12)
     if statNames[key] then
@@ -3090,6 +3094,7 @@ function MT.data.readSpeDict(ptr, showPct)
         parts[#parts + 1] = statNames[key] .. sign .. string.format("%.0f", val)
       end
     end
+    ::nextEntry::
   end
   return table.concat(parts, ", "), total
 end
@@ -3187,7 +3192,7 @@ function MT.data.loadLiveSkills()
     local ai = readQword(atkList + 0x10)
     local ar = readQword(ai + 0x20)
     if not ar or ar == 0 then return "" end
-    return readInteger(ar + 0x14) .. "-" .. readInteger(ar + 0x18)
+    return (readInteger(ar + 0x14) or 0) .. "-" .. (readInteger(ar + 0x18) or 0)
   end
 
   local function readSpeEffects(sk)
@@ -4179,14 +4184,16 @@ function MT.cheats.sect.memberLimitEnable(newLimit)
   local fdClass = c.findClass("ForceData")
   if not fdClass then error("ForceData类未找到 ForceData class not found") end
   local gmfn = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
-  local nm = allocateMemory(64)
+  local nm = allocateMemory(128)
 
   -- Resolve BOTH methods before patching anything (atomic: both or neither)
+  writeBytes(nm, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
   writeString(nm, "GetMaxHeroNum")
   local mi1 = executeCodeEx(0, nil, gmfn, fdClass, nm, 0)
   if not mi1 or mi1 == 0 then deAlloc(nm); error("GetMaxHeroNum未找到 not found") end
   local target1 = readQword(mi1)
 
+  writeBytes(nm, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
   writeString(nm, "PopulationNotFull")
   local mi2 = executeCodeEx(0, nil, gmfn, fdClass, nm, 0)
   if not mi2 or mi2 == 0 then deAlloc(nm); error("PopulationNotFull未找到 not found") end
