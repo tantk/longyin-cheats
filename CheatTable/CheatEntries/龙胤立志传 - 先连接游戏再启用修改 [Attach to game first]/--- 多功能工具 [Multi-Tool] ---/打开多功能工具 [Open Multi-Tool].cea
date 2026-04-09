@@ -8,6 +8,7 @@ if type(MT) ~= "table" or not MT.ui then
 end
 if _itemAdderForm then _itemAdderForm.destroy(); _itemAdderForm = nil end
 
+local _formOk, _formErr = pcall(function()
 -- ============================================================
 -- Multi-Tool v8 Form
 -- All logic, helpers, databases, hooks, and item/hero/event
@@ -1932,38 +1933,53 @@ _evtLoaderTimer.Enabled = true
 -- ============================================================
 
 frm.Show()
+end) -- end pcall(_formOk)
+
+if not _formOk then
+  local msg = tostring(_formErr)
+  if MT.diag then MT.diag("[form] CREATION ERROR: " .. msg) end
+  showMessage("多功能工具创建失败 / Multi-Tool form error:\n\n" .. msg .. "\n\n请截图此错误并反馈\nPlease screenshot this error and report it.")
+  pcall(function() if _itemAdderForm then _itemAdderForm.destroy() end end)
+  _itemAdderForm = nil
+end
 {$asm}
 
 [DISABLE]
 {$lua}
 if syntaxcheck then return end
 
--- 1. Destroy GUI
-if _itemAdderForm then _itemAdderForm.destroy(); _itemAdderForm = nil end
-_mtStatusLbl = nil
+pcall(function()
+  -- 1. Destroy GUI
+  if _itemAdderForm then _itemAdderForm.destroy(); _itemAdderForm = nil end
+  _mtStatusLbl = nil
+  _threadGatedControls = {}
 
--- 2. Restore all toggle/patch state via MT.cheats disable functions
-pcall(MT.cheats.sect.memberLimitDisable)
-pcall(MT.cheats.sect.noCostDisable)
-pcall(MT.cheats.stats.talentSlotDisable)
-pcall(MT.cheats.stats.combatExpDisable)
-pcall(MT.cheats.stats.livingExpDisable)
-pcall(MT.cheats.battle.battleSpeedDisable)
-pcall(MT.cheats.explore.horseSpeedDisable)
--- Talent cap patch (GetMaxTagNum) -- uses global _sectTalentCapPatches
-if _sectTalentCapPatches then
-  pcall(function()
-    local c2 = MT.il2cpp.init()
-    if c2:ensure("hd", "HeroData") then
-      local addr = MT.method.findAddr(c2.hd.klass, "GetMaxTagNum")
-      if addr then
-        for i = 1, #_sectTalentCapPatches do writeBytes(addr + i - 1, _sectTalentCapPatches[i]) end
+  if type(MT) ~= "table" then return end
+
+  -- 2. Restore all toggle/patch state via MT.cheats disable functions
+  pcall(MT.cheats.sect.memberLimitDisable)
+  pcall(MT.cheats.sect.noCostDisable)
+  pcall(MT.cheats.stats.talentSlotDisable)
+  pcall(MT.cheats.stats.combatExpDisable)
+  pcall(MT.cheats.stats.livingExpDisable)
+  pcall(MT.cheats.battle.battleSpeedDisable)
+  pcall(MT.cheats.explore.horseSpeedDisable)
+  pcall(MT.cheats.stats.creationTalentSlotDisable)
+  -- Talent cap patch (GetMaxTagNum) -- uses global _sectTalentCapPatches
+  if _sectTalentCapPatches then
+    pcall(function()
+      local c2 = MT.il2cpp.init()
+      if c2:ensure("hd", "HeroData") then
+        local addr = MT.method.findAddr(c2.hd.klass, "GetMaxTagNum")
+        if addr then
+          for i = 1, #_sectTalentCapPatches do writeBytes(addr + i - 1, _sectTalentCapPatches[i]) end
+        end
       end
-    end
-  end)
-  _sectTalentCapPatches = nil
-end
+    end)
+    _sectTalentCapPatches = nil
+  end
 
--- 3. Clean up hook, dealloc memory, restore Update
-MT.hook.cleanup()
+  -- 3. Clean up hook, dealloc memory, restore Update
+  MT.hook.cleanup()
+end)
 {$asm}
