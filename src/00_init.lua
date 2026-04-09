@@ -78,27 +78,27 @@ _mtDiagWrite(string.format(
   _mtObjType(_evtLoaderTimer), _mtObjType(_staleCheckTimer), _mtObjType(_flashTimers), _mtObjType(_itemAdderForm)
 ))
 
--- Cleanup must NEVER prevent MT from being defined
+-- Cleanup: disable stale timers, nil references. Do NOT call .destroy() —
+-- it accesses Delphi objects that may be invalid, causing access violations.
 _mtTry("cleanup block", function()
-  -- Kill stale timers from previous CT load
-  if _maLoaderTimer then _mtTry("_maLoaderTimer.destroy", function() _maLoaderTimer.Enabled = false; _maLoaderTimer.destroy() end) end
-  if _maTabTimer then _mtTry("_maTabTimer.destroy", function() _maTabTimer.Enabled = false; _maTabTimer.destroy() end) end
-  if _skillLoaderTimer then _mtTry("_skillLoaderTimer.destroy", function() _skillLoaderTimer.Enabled = false; _skillLoaderTimer.destroy() end) end
-  if _evtLoaderTimer then _mtTry("_evtLoaderTimer.destroy", function() _evtLoaderTimer.Enabled = false; _evtLoaderTimer.destroy() end) end
-  if _staleCheckTimer then _mtTry("_staleCheckTimer.destroy", function() _staleCheckTimer.Enabled = false; _staleCheckTimer.destroy() end) end
-  -- Kill orphan flash timers
+  local function disableTimer(name, t)
+    if t then _mtTry(name, function() t.Enabled = false end) end
+  end
+  disableTimer("_maLoaderTimer", _maLoaderTimer)
+  disableTimer("_maTabTimer", _maTabTimer)
+  disableTimer("_skillLoaderTimer", _skillLoaderTimer)
+  disableTimer("_evtLoaderTimer", _evtLoaderTimer)
+  disableTimer("_staleCheckTimer", _staleCheckTimer)
   if type(_flashTimers) == "table" then
     local n = 0
     for t in pairs(_flashTimers) do
       n = n + 1
-      _mtTry("_flashTimers[" .. tostring(n) .. "].destroy", function() t.Enabled = false; t.destroy() end)
+      _mtTry("flashTimer" .. n, function() t.Enabled = false end)
     end
-    _mtDiagWrite("[cleanup] processed flash timers: " .. tostring(n))
+    _mtDiagWrite("[cleanup] disabled " .. n .. " flash timers")
   else
     _mtDiagWrite("[cleanup] _flashTimers is " .. _mtObjType(_flashTimers))
   end
-  -- Destroy stale form from previous session
-  if _itemAdderForm then _mtTry("_itemAdderForm.destroy", function() _itemAdderForm.destroy() end) end
 end)
 _maLoaderTimer = nil
 _maTabTimer = nil
