@@ -1232,13 +1232,17 @@ tailcall:
       -- Requires at least 14 bytes at the patch site (6 bytes FF25 + 8 bytes addr)
       if _ia_patchLen &lt; 14 then
         -- Not enough space for FF 25 — use relay trampoline
-        _ia_relayCode = allocateMemory(32)
+        _ia_relayCode = allocateMemory(32, _ia_directPatchAddr) or allocateMemory(32)
         if not _ia_relayCode or _ia_relayCode == 0 then
-          return false, "Failed to allocate relay trampoline"
+          return false, "中继分配失败 Failed to allocate relay trampoline"
         end
         writeBytes(_ia_relayCode, {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00})
         writeQword(_ia_relayCode + 6, hookCodeAddr)
         local relRelay = _ia_relayCode - (_ia_directPatchAddr + 5)
+        if relRelay &lt; -0x80000000 or relRelay &gt; 0x7FFFFFFF then
+          deAlloc(_ia_relayCode); _ia_relayCode = nil
+          return false, "中继距离超范围 Relay too far for E9 rel32"
+        end
         if relRelay &lt; 0 then relRelay = relRelay + 0x100000000 end
         patch = {0xE9,
           relRelay % 256,
