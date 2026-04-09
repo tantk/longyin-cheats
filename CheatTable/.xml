@@ -4043,7 +4043,8 @@ print("[MT] Shared core loaded (v8)")
 end)
 if not _mtLoadOk then
   MT._loadError = tostring(_mtLoadErr)
-  print("[MT] ERROR: " .. MT._loadError)
+  print("[MT] LOAD ERROR: " .. MT._loadError)
+  showMessage("修改器加载出错 / Load error:\n\n" .. MT._loadError)
 end
 
   </LuaScript>

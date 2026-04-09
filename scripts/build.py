@@ -133,7 +133,8 @@ def build():
         'end)\n' + \
         'if not _mtLoadOk then\n' + \
         '  MT._loadError = tostring(_mtLoadErr)\n' + \
-        '  print("[MT] ERROR: " .. MT._loadError)\n' + \
+        '  print("[MT] LOAD ERROR: " .. MT._loadError)\n' + \
+        '  showMessage("修改器加载出错 / Load error:\\n\\n" .. MT._loadError)\n' + \
         'end\n'
     with open(lua_script_path, "w", encoding="utf-8") as f:
         f.write(combined)
