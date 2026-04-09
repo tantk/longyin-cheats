@@ -4,13 +4,52 @@
 -- Loaded once on CT open. All shared functions in MT namespace.
 -- ============================================================
 
-local _mtDiagPath = (os.getenv("TEMP") or ".") .. "\\ce_mt_load_diag.log"
+local _mtDiagPath = nil
+_mtDiagMem = type(_mtDiagMem) == "table" and _mtDiagMem or {}
+
+local function _mtPushMem(msg)
+  _mtDiagMem[#_mtDiagMem + 1] = os.date("%Y-%m-%d %H:%M:%S ") .. tostring(msg)
+  if #_mtDiagMem > 400 then table.remove(_mtDiagMem, 1) end
+end
+
+local function _mtDiagCandidates()
+  local out = {}
+  local function add(base)
+    if type(base) == "string" and base ~= "" then out[#out + 1] = base end
+  end
+  add(os.getenv("TEMP"))
+  add(os.getenv("TMP"))
+  add(os.getenv("APPDATA"))
+  if type(getCheatEngineDir) == "function" then
+    local ok, ceDir = pcall(getCheatEngineDir)
+    if ok then add(ceDir) end
+  end
+  add(".")
+  return out
+end
+
+local function _mtOpenDiagFile()
+  local name = "ce_mt_load_diag.log"
+  local cands = _mtDiagCandidates()
+  for _, base in ipairs(cands) do
+    local sep = (base:sub(-1) == "\\" or base:sub(-1) == "/") and "" or "\\"
+    local path = base .. sep .. name
+    local f = io.open(path, "a")
+    if f then
+      _mtDiagPath = path
+      if type(MT) == "table" then MT.diagPath = _mtDiagPath end
+      return f
+    end
+  end
+  return nil
+end
 
 local function _mtDiagWrite(msg)
+  _mtPushMem(msg)
   pcall(function()
-    local f = io.open(_mtDiagPath, "a")
+    local f = _mtOpenDiagFile()
     if not f then return end
-    f:write(os.date("%Y-%m-%d %H:%M:%S ") .. tostring(msg) .. "\n")
+    f:write(_mtDiagMem[#_mtDiagMem] .. "\n")
     f:close()
   end)
 end
@@ -76,4 +115,5 @@ errorOnLookupFailure(false)
 MT = {}
 MT.diag = _mtDiagWrite
 MT.diagPath = _mtDiagPath
+MT.getDiagPath = function() return _mtDiagPath end
 MT.diag("[init] MT namespace created")

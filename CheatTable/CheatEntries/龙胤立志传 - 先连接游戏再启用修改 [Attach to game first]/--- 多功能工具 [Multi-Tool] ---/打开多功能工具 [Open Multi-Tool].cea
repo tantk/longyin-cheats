@@ -47,15 +47,23 @@ lblConnStatus.Font.Size = 9
 lblConnStatus.Font.Color = 0x0000FF  -- red BGR
 
 local function readDiagTail(path, maxLines, maxChars)
-  local f = io.open(path, "r")
-  if not f then return nil, "diag file not found: " .. tostring(path) end
+  local f = path and io.open(path, "r") or nil
   local lines = {}
   maxLines = maxLines or 200
-  for line in f:lines() do
-    lines[#lines + 1] = line
-    if #lines > maxLines then table.remove(lines, 1) end
+  if f then
+    for line in f:lines() do
+      lines[#lines + 1] = line
+      if #lines > maxLines then table.remove(lines, 1) end
+    end
+    f:close()
+  elseif type(_mtDiagMem) == "table" and #_mtDiagMem > 0 then
+    local start = math.max(1, #_mtDiagMem - maxLines + 1)
+    for i = start, #_mtDiagMem do
+      lines[#lines + 1] = _mtDiagMem[i]
+    end
+  else
+    return nil, "diag unavailable: no readable file and no memory buffer"
   end
-  f:close()
   local txt = table.concat(lines, "\n")
   if maxChars and #txt > maxChars then
     txt = txt:sub(#txt - maxChars + 1)
@@ -71,7 +79,19 @@ btnCopyDiag.Font.Size = 9
 btnCopyDiag.OnClick = function(sender)
   local ok, err = pcall(function()
     local pid = getOpenedProcessID() or 0
-    local diagPath = (type(MT) == "table" and MT.diagPath) or ((os.getenv("TEMP") or ".") .. "\\ce_mt_load_diag.log")
+    local diagPath = nil
+    if type(MT) == "table" then
+      if type(MT.getDiagPath) == "function" then
+        local okPath, p = pcall(MT.getDiagPath)
+        if okPath then diagPath = p end
+      end
+      if (not diagPath or diagPath == "") and type(MT.diagPath) == "string" then
+        diagPath = MT.diagPath
+      end
+    end
+    if not diagPath or diagPath == "" then
+      diagPath = (os.getenv("TEMP") or ".") .. "\\ce_mt_load_diag.log"
+    end
     local tail, tailErr = readDiagTail(diagPath, 200, 30000)
     local lines = {
       "=== LongYin Multi-Tool Diagnostics ===",

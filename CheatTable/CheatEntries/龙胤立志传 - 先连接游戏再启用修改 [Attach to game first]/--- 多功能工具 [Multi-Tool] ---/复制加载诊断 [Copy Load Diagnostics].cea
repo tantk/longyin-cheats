@@ -1,0 +1,85 @@
+[ENABLE]
+{$lua}
+if syntaxcheck then return end
+
+local function readDiagTail(path, maxLines, maxChars)
+  local f = path and io.open(path, "r") or nil
+  local lines = {}
+  maxLines = maxLines or 200
+  if f then
+    for line in f:lines() do
+      lines[#lines + 1] = line
+      if #lines > maxLines then table.remove(lines, 1) end
+    end
+    f:close()
+  elseif type(_mtDiagMem) == "table" and #_mtDiagMem > 0 then
+    local start = math.max(1, #_mtDiagMem - maxLines + 1)
+    for i = start, #_mtDiagMem do
+      lines[#lines + 1] = _mtDiagMem[i]
+    end
+  else
+    return nil, "diag unavailable: no readable file and no memory buffer"
+  end
+  local txt = table.concat(lines, "\n")
+  if maxChars and #txt > maxChars then
+    txt = txt:sub(#txt - maxChars + 1)
+  end
+  return txt
+end
+
+local ok, err = pcall(function()
+  local pid = getOpenedProcessID() or 0
+  local diagPath = nil
+  if type(MT) == "table" then
+    if type(MT.getDiagPath) == "function" then
+      local okPath, p = pcall(MT.getDiagPath)
+      if okPath then diagPath = p end
+    end
+    if (not diagPath or diagPath == "") and type(MT.diagPath) == "string" then
+      diagPath = MT.diagPath
+    end
+  end
+  if not diagPath or diagPath == "" then
+    diagPath = (os.getenv("TEMP") or ".") .. "\\ce_mt_load_diag.log"
+  end
+  local tail, tailErr = readDiagTail(diagPath, 200, 30000)
+
+  local lines = {
+    "=== LongYin Load Diagnostics ===",
+    "Time: " .. os.date("%Y-%m-%d %H:%M:%S"),
+    "PID: " .. tostring(pid),
+    "DiagPath: " .. tostring(diagPath),
+  }
+  if type(MT) == "table" and MT._loadError then
+    lines[#lines + 1] = "MT._loadError: " .. tostring(MT._loadError)
+  end
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "--- diag tail ---"
+  lines[#lines + 1] = tail or ("(unavailable) " .. tostring(tailErr))
+  local payload = table.concat(lines, "\n")
+
+  if type(writeToClipboard) == "function" then
+    writeToClipboard(payload)
+  elseif type(copyToClipboard) == "function" then
+    copyToClipboard(payload)
+  else
+    error("Clipboard API unavailable")
+  end
+
+  if type(MT) == "table" and type(MT.diag) == "function" then
+    pcall(MT.diag, "[fallback] load diagnostics copied from standalone cheat entry")
+  end
+end)
+
+if ok then
+  showMessage("加载诊断已复制到剪贴板\nLoad diagnostics copied to clipboard.")
+else
+  showMessage("复制加载诊断失败 / Copy load diagnostics failed:\n\n" .. tostring(err))
+end
+
+{$asm}
+
+[DISABLE]
+{$lua}
+if syntaxcheck then return end
+{$asm}
