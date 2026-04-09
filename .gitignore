@@ -64,3 +64,5 @@ scripts/__init__.py
 !.claude/skills/game-update/
 .mcp.json
 CLAUDE.md
+entities.json
+mempalace.yaml
