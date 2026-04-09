@@ -1,0 +1,6 @@
+# Force LF line endings for deterministic builds
+# CI (Linux) and local (Windows) produce identical CT files
+* text=auto eol=lf
+*.CT binary
+*.dat binary
+*.png binary
