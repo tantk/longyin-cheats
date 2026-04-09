@@ -81,19 +81,6 @@ ret
 end
 
 -- ============================================================
--- MT.hook.shellExec
--- ============================================================
-function MT.hook.shellExec(bytesFunc)
-  local WK = MT.hook.WK
-  local p = 0
-  local function w(b) writeBytes(WK.code + p, b); p = p + #b end
-  local function q(a) writeQword(WK.code + p, a); p = p + 8 end
-  local function d(v) writeInteger(WK.code + p, v); p = p + 4 end
-  bytesFunc(w, q, d)
-  createRemoteThread(WK.code)
-end
-
--- ============================================================
 -- MT.hook.resolveAOBs
 -- ============================================================
 function MT.hook.resolveAOBs()
@@ -353,6 +340,36 @@ function MT.hook.installMainThreadHook()
   log(string.format("Pre-allocated: hookMem=%s cmdBuf=%s hookCode=%s origUpdate=%s",
     toHex(hookMem), toHex(cmdBufMem), toHex(hookCodeMem), toHex(origUpdateMem)))
 
+  -- ============================================================
+  -- cmdBuf Layout (120 bytes, shared between hookCode ASM and Lua callers)
+  -- +0x00  cmd       (int32)  — command ID: 0=none, 1=GetItem, 2=CreateAndAdd, 3=AllocCtor, 4=GenEquip, 5=GenHero, 6=SimpleCall, 7=ThreeIntCall, 8=PtrCall(runtime_invoke)
+  -- +0x04  status    (int32)  — 0=pending, 1=success, 2=error
+  -- +0x08  result    (ptr64)  — return value from command
+  -- +0x10  param1    (int32)  — edx for cmd=4 (bossLv/typeIdx), ecx for cmd=5/7
+  -- +0x14  param2    (int32)  — r8d for cmd=4 (weaponIdx)
+  -- +0x18  param3    (float)  — xmm2/xmm3 for cmd=4 (qualityRate)
+  -- +0x20  gc        (ptr64)  — GameController._instance (written by discover)
+  -- +0x28  hero      (ptr64)  — player HeroData pointer
+  -- +0x30  getItemPtr(ptr64)  — resolved GetItem function address
+  -- +0x38  gate      (int32)  — enable flag: 0=disabled, 1=enabled
+  -- +0x40  heartbeat (int32)  — incremented every Update tick (liveness check)
+  -- +0x48  objNew    (ptr64)  — il2cpp_object_new address
+  -- +0x50  itemKlass (ptr64)  — ItemData class pointer
+  -- +0x58  ctorAddr  (ptr64)  — ItemData..ctor address
+  -- +0x60  (reserved)
+  -- +0x68  funcAddr  (ptr64)  — function to call for cmd=4/6/7
+  -- +0x70  (reserved)
+  -- +0x78  (reserved)
+  -- +0x80  (reserved)
+  -- +0x88  thisPtr   (ptr64)  — this pointer for cmd=8 (runtime_invoke)
+  -- +0x90  methodInfo(ptr64)  — MethodInfo* for cmd=8
+  -- +0x98  exception (ptr64)  — exception output for cmd=8
+  -- +0xA0  args[0]   (ptr64)  — arg pointer array for cmd=8
+  -- +0xA8  args[1]   (ptr64)
+  -- +0xB0  args[2]   (ptr64)
+  -- +0xB8  args[3]   (ptr64)
+  -- +0xC0  args[4]   (ptr64)
+  -- ============================================================
   local aa = string.format([[
 cmdBuf:
 dq 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
@@ -1296,57 +1313,5 @@ function MT.hook.getItemName(ptr)
   return readString(np + 0x14, nl * 2, true) or "?"
 end
 
-function MT.hook.allocItem()
-  local S = MT.hook.S
-  local WK = MT.hook.WK
-  writeQword(WK.data, 0)
-  MT.hook.shellExec(function(w, q)
-    w({0x48,0x83,0xEC,0x28})
-    w({0x48,0xB9}); q(S.itemKlass)
-    w({0x48,0xB8}); q(S.objNew); w({0xFF,0xD0})
-    w({0x48,0xA3}); q(WK.data)
-    w({0x48,0x83,0xC4,0x28}); w({0xC3})
-  end)
-  sleep(300)
-  return readQword(WK.data)
-end
-
-function MT.hook.callFunc(thisPtr, funcRVA, arg1, arg2, arg3)
-  local S = MT.hook.S
-  MT.hook.shellExec(function(w, q, d)
-    w({0x48,0x83,0xEC,0x28})
-    w({0x48,0xB9}); q(thisPtr)
-    if arg1 then w({0xBA}); d(arg1) else w({0x33,0xD2}) end
-    if arg2 then w({0x41,0xB8}); d(arg2) else w({0x45,0x33,0xC0}) end
-    if arg3 then w({0x41,0xB9}); d(arg3) else w({0x4D,0x31,0xC9}) end
-    w({0x48,0xB8}); q(S.base + funcRVA); w({0xFF,0xD0})
-    w({0x48,0x83,0xC4,0x28}); w({0xC3})
-  end)
-  sleep(300)
-end
-
-function MT.hook.mergeIntoInventory(itemPtr)
-  local S = MT.hook.S
-  local RVA = MT.hook.RVA
-  local WK = MT.hook.WK
-  writeQword(WK.data + 0x10, 0)
-  MT.hook.shellExec(function(w, q)
-    w({0x48,0x83,0xEC,0x28})
-    w({0x48,0xB9}); q(S.ildKlass); w({0x48,0xB8}); q(S.objNew); w({0xFF,0xD0})
-    w({0x48,0x85,0xC0}); w({0x74,0x35})
-    w({0x48,0xA3}); q(WK.data + 0x10)
-    w({0x48,0x8B,0xC8}); w({0x33,0xD2})
-    w({0x48,0xB8}); q(S.base + RVA.ildCtor); w({0xFF,0xD0})
-    w({0x48,0xA1}); q(WK.data + 0x10)
-    w({0x48,0x8B,0x48,0x28}); w({0x48,0x8B,0x51,0x10})
-    w({0x48,0xB8}); q(itemPtr)
-    w({0x48,0x89,0x42,0x20})
-    w({0xC7,0x41,0x18,0x01,0x00,0x00,0x00})
-    w({0x48,0xB9}); q(S.ild)
-    w({0x48,0xA1}); q(WK.data + 0x10)
-    w({0x48,0x8B,0xD0}); w({0x45,0x33,0xC0})
-    w({0x48,0xB8}); q(S.base + RVA.mergeList); w({0xFF,0xD0})
-    w({0x48,0x83,0xC4,0x28}); w({0xC3})
-  end)
-  sleep(400)
-end
+-- (allocItem, callFunc, mergeIntoInventory removed — used shellExec/createRemoteThread
+--  which is replaced by the main-thread hook commands cmd=1 through cmd=8)

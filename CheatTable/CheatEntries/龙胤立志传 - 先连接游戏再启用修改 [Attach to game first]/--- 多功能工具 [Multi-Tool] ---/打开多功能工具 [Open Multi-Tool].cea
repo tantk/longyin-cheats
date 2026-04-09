@@ -1742,19 +1742,7 @@ pcall(function()
   pcall(MT.cheats.battle.battleSpeedDisable)
   pcall(MT.cheats.explore.horseSpeedDisable)
   pcall(MT.cheats.stats.creationTalentSlotDisable)
-  -- Talent cap patch (GetMaxTagNum) -- uses global _sectTalentCapPatches
-  if _sectTalentCapPatches then
-    pcall(function()
-      local c2 = MT.il2cpp.init()
-      if c2:ensure("hd", "HeroData") then
-        local addr = MT.method.findAddr(c2.hd.klass, "GetMaxTagNum")
-        if addr then
-          for i = 1, #_sectTalentCapPatches do writeBytes(addr + i - 1, _sectTalentCapPatches[i]) end
-        end
-      end
-    end)
-    _sectTalentCapPatches = nil
-  end
+  -- Sect talent slots now delegates to stats.talentSlotEnable, so talentSlotDisable handles both
 
   -- 3. Clean up hook, dealloc memory, restore Update
   MT.hook.cleanup()

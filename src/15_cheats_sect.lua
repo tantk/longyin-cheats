@@ -124,19 +124,11 @@ function MT.cheats.sect.setSectTalentPoints(val)
   return string.format("%d人天赋点已设%d", #members, pts)
 end
 
+-- Delegates to MT.cheats.stats.talentSlotEnable to avoid patching the same
+-- GetMaxTagNum method with a separate backup/restore (causes conflict on undo)
 function MT.cheats.sect.setSectTalentSlots(val)
   local slots = tonumber(val) or 99
-  local c2 = MT.il2cpp.init()
-  if not c2:ensure("hd", "HeroData") then error("HeroData未加载 HeroData not loaded") end
-  local targetAddr = MT.method.findAddr(c2.hd.klass, "GetMaxTagNum")
-  if not targetAddr or targetAddr == 0 then error("GetMaxTagNum未找到 GetMaxTagNum not found") end
-  _sectTalentCapPatches = {}
-  for i = 0, 5 do _sectTalentCapPatches[i+1] = readBytes(targetAddr + i, 1) end
-  local b0 = slots % 256
-  local b1 = math.floor(slots / 256) % 256
-  local b2 = math.floor(slots / 65536) % 256
-  local b3 = math.floor(slots / 16777216) % 256
-  writeBytes(targetAddr, {0xB8, b0, b1, b2, b3, 0xC3})
+  MT.cheats.stats.talentSlotEnable(slots)
   return string.format("天赋槽上限已设%d", slots)
 end
 
