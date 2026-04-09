@@ -194,27 +194,48 @@ function MT.il2cpp.init()
     bc_inst = 0x50,
   }
 
-  -- Step 1: Get Assembly-CSharp image (3 calls)
+  -- Step 1: Get Assembly-CSharp image
+  -- Iterate all assemblies to find the one containing GameController
+  -- (BepInEx/mods add assemblies after Assembly-CSharp, breaking last-index assumption)
   local domain = executeCodeEx(0, nil, exports.domainGet)
   if not domain or domain == 0 then error("il2cpp_domain_get failed") end
   local sizePtr = allocateMemory(8); writeQword(sizePtr, 0)
   local arr = executeCodeEx(0, nil, exports.domainGetAsm, domain, sizePtr)
   local count = readInteger(sizePtr); deAlloc(sizePtr)
-  local asmPtr = readQword(arr + (count - 1) * 8)
-  local img = executeCodeEx(0, nil, exports.asmGetImage, asmPtr)
 
-  -- Step 2: Find classes (1 call each)
   local cfn = exports.classFromName
   local ns = allocateMemory(16); writeString(ns, "")
   local cn = allocateMemory(64)
+
+  local img = nil
+  local gc = nil
+  writeString(cn, "GameController")
+  -- Search from last to first (Assembly-CSharp is usually near the end)
+  for i = count - 1, 0, -1 do
+    local asmPtr = readQword(arr + i * 8)
+    if asmPtr and asmPtr ~= 0 then
+      local testImg = executeCodeEx(0, nil, exports.asmGetImage, asmPtr)
+      if testImg and testImg ~= 0 then
+        local k = executeCodeEx(0, nil, cfn, testImg, ns, cn)
+        if k and k ~= 0 then
+          img = testImg
+          gc = k
+          break
+        end
+      end
+    end
+  end
+  if not img or not gc then
+    deAlloc(ns); deAlloc(cn)
+    error("GameController not found in any assembly - is game loaded?")
+  end
+
+  -- Step 2: Find classes (1 call each)
   local function findClass(name)
     writeString(cn, name)
     local k = executeCodeEx(0, nil, cfn, img, ns, cn)
     return k ~= 0 and k or nil
   end
-
-  -- Only GameController is required. Others are resolved lazily (IL2CPP race condition).
-  local gc = findClass("GameController")
   if not gc then error("GameController not found - is game loaded?") end
   local gdc = findClass("GameDataController")
   local gd  = findClass("GlobalData")
