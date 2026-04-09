@@ -86,8 +86,10 @@ Browse and spawn 106 game events with category filter, search, and difficulty co
 If you see an error when loading the CT or opening the Multi-Tool:
 
 1. **Close CE completely** (not just reload) → reopen → load CT again
-2. If the error persists, enable **"复制加载诊断 [Copy Load Diagnostics]"** in the address list — this copies diagnostic info to your clipboard
-3. Paste the diagnostics when reporting the issue
+2. If the error persists, use one of these to copy diagnostic info:
+   - **In the address list**: enable **"复制加载诊断 [Copy Load Diagnostics]"** — works even if the Multi-Tool fails to open
+   - **In the Multi-Tool form**: click the **"复制诊断 [Copy Diag]"** button (top right)
+3. Paste the copied diagnostics when reporting the issue (Ctrl+V into forum/chat)
 
 | Error | Cause | Fix |
 |-------|-------|-----|
@@ -101,8 +103,10 @@ If you see an error when loading the CT or opening the Multi-Tool:
 加载CT或打开多功能工具时出错：
 
 1. **完全关闭CE**（不是重新加载）→ 重新打开 → 再次加载CT
-2. 如果错误持续，在地址列表中启用 **"复制加载诊断 [Copy Load Diagnostics]"** — 诊断信息会复制到剪贴板
-3. 反馈问题时粘贴诊断信息
+2. 如果错误持续，使用以下方式复制诊断信息：
+   - **地址列表中**：启用 **"复制加载诊断 [Copy Load Diagnostics]"** — 即使多功能工具无法打开也能使用
+   - **多功能工具窗口中**：点击右上角 **"复制诊断 [Copy Diag]"** 按钮
+3. 反馈问题时粘贴诊断信息（Ctrl+V 到论坛/聊天）
 
 | 错误 | 原因 | 解决方法 |
 |------|------|----------|
