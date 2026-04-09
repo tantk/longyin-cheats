@@ -110,10 +110,14 @@ _mtDiagWrite(string.format(
   _mtObjType(_evtLoaderTimer), _mtObjType(_staleCheckTimer), _mtObjType(_flashTimers), _mtObjType(_itemAdderForm)
 ))
 
--- Cleanup: do NOT access any property on stale Delphi objects —
--- even .Enabled = false triggers C-level access violations on destroyed objects.
--- Just nil all references and let CE GC handle the rest.
-_mtDiagWrite("[cleanup] nil-ing stale references (no Delphi access)")
+-- Cleanup strategy:
+-- TIMERS: do NOT touch — their callbacks guard against nil _itemAdderForm
+--   and self-disable on next fire. Accessing .Enabled causes C-level AV.
+-- FORM: safe to destroy (we created it, not a stale system object).
+_mtDiagWrite("[cleanup] destroying stale form, nil-ing timer refs")
+if _itemAdderForm then
+  pcall(function() _itemAdderForm.destroy() end)
+end
 _maLoaderTimer = nil
 _maTabTimer = nil
 _skillLoaderTimer = nil
