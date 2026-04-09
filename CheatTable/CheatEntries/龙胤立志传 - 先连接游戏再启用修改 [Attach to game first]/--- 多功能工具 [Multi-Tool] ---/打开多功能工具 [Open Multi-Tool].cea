@@ -1769,7 +1769,7 @@ _mtStatusLbl = lblStatus
 _itemAdderForm = frm
 
 -- Close handler: kill all timers to prevent C stack overflow from _index recursion
-frm.OnClose = function(sender)
+frm.OnClose = function(sender, action)
   _itemAdderForm = nil
   _mtStatusLbl = nil
   local timers = {_maTabTimer, _evtLoaderTimer}
@@ -1779,6 +1779,7 @@ frm.OnClose = function(sender)
   _maTabTimer = nil
   _evtLoaderTimer = nil
   _threadGatedControls = {}
+  return caFree
 end
 
 -- Resize handler: scale PageControl and Martial Arts tab controls with form
