@@ -527,7 +527,8 @@ do
   local maL = MT.ui.lay(tabMartial, {x=MA_PAD, y=FY, rowH=RH, btnH=BH})
   local fr = maL:inlineRow()
   fr:label("分类:")
-  local cmbCat = fr:combo({"全部 All","内功","轻功","绝技","拳掌","剑法","刀法","长兵","奇门","射术"}, 120)
+  local catOpts = {"全部 All","内功","轻功","绝技","拳掌","剑法","刀法","长兵","奇门","射术"}
+  local cmbCat = fr:combo(catOpts, 120)
   fr:label("品质:")
   local cmbRare = fr:combo({"全部","基础(0)","进阶(1)","上乘(2)","秘传(3)","顶极(4)","绝世(5)"}, 110)
   fr:label("门派:")

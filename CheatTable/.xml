@@ -4023,6 +4023,7 @@ function MT.cheats.battle.battleSpeedEnable(multi)
   local speedTimer = createTimer(nil)
   speedTimer.Interval = 50
   speedTimer.OnTimer = function()
+    if not _itemAdderForm then speedTimer.Enabled = false; return end
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then speedTimer.Enabled = false; return end
     local ok, wd = pcall(MT.game.getWorldData)
