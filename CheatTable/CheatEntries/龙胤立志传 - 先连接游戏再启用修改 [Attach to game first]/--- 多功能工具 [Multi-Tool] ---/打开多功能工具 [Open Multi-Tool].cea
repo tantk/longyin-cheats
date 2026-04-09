@@ -46,6 +46,75 @@ lblConnStatus.Caption = "未连接 [Not connected]"
 lblConnStatus.Font.Size = 9
 lblConnStatus.Font.Color = 0x0000FF  -- red BGR
 
+local function readDiagTail(path, maxLines, maxChars)
+  local f = io.open(path, "r")
+  if not f then return nil, "diag file not found: " .. tostring(path) end
+  local lines = {}
+  maxLines = maxLines or 200
+  for line in f:lines() do
+    lines[#lines + 1] = line
+    if #lines > maxLines then table.remove(lines, 1) end
+  end
+  f:close()
+  local txt = table.concat(lines, "\n")
+  if maxChars and #txt > maxChars then
+    txt = txt:sub(#txt - maxChars + 1)
+  end
+  return txt
+end
+
+local btnCopyDiag = createButton(pnlTop)
+btnCopyDiag.Left = 908; btnCopyDiag.Top = 6; btnCopyDiag.Width = 184; btnCopyDiag.Height = 28
+btnCopyDiag.Caption = "复制诊断 [Copy Diag]"
+btnCopyDiag.Font.Size = 9
+
+btnCopyDiag.OnClick = function(sender)
+  local ok, err = pcall(function()
+    local pid = getOpenedProcessID() or 0
+    local diagPath = (type(MT) == "table" and MT.diagPath) or ((os.getenv("TEMP") or ".") .. "\\ce_mt_load_diag.log")
+    local tail, tailErr = readDiagTail(diagPath, 200, 30000)
+    local lines = {
+      "=== LongYin Multi-Tool Diagnostics ===",
+      "Time: " .. os.date("%Y-%m-%d %H:%M:%S"),
+      "PID: " .. tostring(pid),
+      "Form: " .. tostring(frm.Caption),
+      "DiagPath: " .. tostring(diagPath),
+    }
+    if type(MT) == "table" and MT._loadError then
+      lines[#lines + 1] = "MT._loadError: " .. tostring(MT._loadError)
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = "--- diag tail ---"
+    lines[#lines + 1] = tail or ("(unavailable) " .. tostring(tailErr))
+    local payload = table.concat(lines, "\n")
+
+    if type(writeToClipboard) == "function" then
+      writeToClipboard(payload)
+    elseif type(copyToClipboard) == "function" then
+      copyToClipboard(payload)
+    else
+      error("Clipboard API unavailable")
+    end
+
+    if type(MT) == "table" and type(MT.diag) == "function" then
+      pcall(MT.diag, "[ui] diagnostics copied from top bar button")
+    end
+    lblConnStatus.Caption = "诊断已复制 [Diag copied]"
+    lblConnStatus.Font.Color = 0x008000
+    if type(MT) == "table" and MT.ui and MT.ui.setStatus then
+      MT.ui.setStatus("Diagnostics copied to clipboard", 0x008000)
+    end
+  end)
+  if not ok then
+    lblConnStatus.Caption = "复制失败 [Copy failed]"
+    lblConnStatus.Font.Color = 0x0000FF
+    if type(MT) == "table" and MT.ui and MT.ui.setStatus then
+      MT.ui.setStatus("ERR: " .. tostring(err), 0x0000FF)
+    end
+    showMessage("复制诊断失败 / Copy diagnostics failed:\n\n" .. tostring(err))
+  end
+end
+
 btnConnect.OnClick = function(sender)
   local ok, err = pcall(function()
     local pid = getOpenedProcessID()
