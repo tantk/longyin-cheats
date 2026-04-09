@@ -15,6 +15,8 @@ do
 
   function MT.log.write(msg)
     if _logFile then _logFile:write(os.date("%H:%M:%S ") .. tostring(msg) .. "\n"); _logFile:flush() end
+    -- Forward to diagnostic system so Copy Diag captures connect-phase logs
+    if MT.diag then pcall(MT.diag, tostring(msg)) end
   end
 
   function MT.log.close()

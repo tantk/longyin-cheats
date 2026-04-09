@@ -107,7 +107,7 @@ def build():
         shutil.copy2(src, dst)
         xml_path = dst + ".xml"
         if not os.path.exists(xml_path):
-            with open(xml_path, "w", encoding="utf-8") as f:
+            with open(xml_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(f"<File>\n  <Name>{fname}</Name>\n</File>\n")
         count += 1
     print(f"[pack_data] {count} files → CheatTable/Files/")
@@ -137,7 +137,7 @@ def build():
         '  print("[MT] LOAD ERROR: " .. MT._loadError)\n' + \
         '  showMessage("修改器加载出错 / Load error:\\n\\n" .. MT._loadError)\n' + \
         'end\n'
-    with open(lua_script_path, "w", encoding="utf-8") as f:
+    with open(lua_script_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(combined)
     print(f"[concat] {len(src_files)} src/*.lua → LuaScript.lua ({len(combined):,} chars)")
 
@@ -149,7 +149,10 @@ def build():
     if ls is None:
         ls = ET.SubElement(root, "LuaScript")
     ls.text = "\n" + combined + "\n  "
-    tree.write(xml_path, encoding="unicode", xml_declaration=False)
+    # Write XML with LF line endings (deterministic across platforms)
+    xml_str = ET.tostring(root, encoding="unicode")
+    with open(xml_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(xml_str)
     print(f"[inject] LuaScript.lua → .xml ({len(combined):,} chars)")
 
     # Step 4: Lint (non-fatal)
@@ -159,7 +162,18 @@ def build():
     else:
         print("[lint] luacheck not found, skipping")
 
-    # Step 5: CE2FS pack → dist/*.CT
+    # Step 5: Normalize all text files in CheatTable/ to LF (deterministic builds)
+    for dirpath, _, filenames in os.walk(CT_DIR):
+        for fname in filenames:
+            if fname.endswith((".xml", ".cea", ".lua")):
+                fpath = os.path.join(dirpath, fname)
+                with open(fpath, "rb") as f:
+                    data = f.read()
+                if b"\r\n" in data:
+                    with open(fpath, "wb") as f:
+                        f.write(data.replace(b"\r\n", b"\n"))
+
+    # Step 6: CE2FS pack → dist/*.CT
     os.makedirs(DIST_DIR, exist_ok=True)
     out_path = os.path.join(DIST_DIR, "LongYinLiZhiZhuan.CT")
     subs = [f"{k}={v}" for k, v in env.items()]

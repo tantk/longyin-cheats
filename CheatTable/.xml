@@ -139,6 +139,8 @@ do
 
   function MT.log.write(msg)
     if _logFile then _logFile:write(os.date("%H:%M:%S ") .. tostring(msg) .. "\n"); _logFile:flush() end
+    -- Forward to diagnostic system so Copy Diag captures connect-phase logs
+    if MT.diag then pcall(MT.diag, tostring(msg)) end
   end
 
   function MT.log.close()
@@ -1284,12 +1286,12 @@ function MT.hook.discover(fastMode)
   S = MT.hook.S
   S.base = getAddress("GameAssembly.dll")
   log("S.base = " .. toHex(S.base))
-  if not S.base or S.base == 0 then return false, "GameAssembly.dll not loaded" end
-  if not MT.hook.allocWorkArea() then return false, "Work area alloc failed" end
+  if not S.base or S.base == 0 then log("FAIL: GA not loaded"); return false, "GameAssembly.dll not loaded" end
+  if not MT.hook.allocWorkArea() then log("FAIL: alloc work area"); return false, "Work area alloc failed" end
 
   local classFromName = getAddress("GameAssembly.il2cpp_class_from_name")
   local objNew = getAddress("GameAssembly.il2cpp_object_new")
-  if not objNew or objNew == 0 then return false, "il2cpp exports missing" end
+  if not objNew or objNew == 0 then log("FAIL: il2cpp_object_new missing"); return false, "il2cpp exports missing" end
   S.objNew = objNew
 
   -- Use executeCodeEx (proven safe) instead of shellExec/createRemoteThread (crashes)
@@ -1309,13 +1311,13 @@ function MT.hook.discover(fastMode)
   log("About to findClass GameController...")
   local gcClass = findClass("GameController")
   log("gcClass=" .. toHex(gcClass or 0))
-  if not gcClass or gcClass == 0 then return false, "GameController not found" end
+  if not gcClass or gcClass == 0 then log("FAIL: GC class not found"); return false, "GameController not found" end
   log("About to findClass GameDataController...")
   local gdcClass = findClass("GameDataController")
   log("gdcClass=" .. toHex(gdcClass or 0))
 
   local gc = readQword(c.gc.static + c.gc.instOff)
-  if not gc or gc == 0 then return false, "GC._instance null (load save)" end
+  if not gc or gc == 0 then log("FAIL: GC._instance null — need to load a save first"); return false, "GC._instance null (load save)" end
   S.gc = gc
   log("gc=" .. toHex(gc))
 
@@ -1350,13 +1352,13 @@ function MT.hook.discover(fastMode)
   end
 
   local wd = readQword(gc + 0x20)
-  if not wd or wd == 0 then return false, "WorldData null" end
+  if not wd or wd == 0 then log("FAIL: WorldData null"); return false, "WorldData null" end
   local hl = readQword(wd + 0x50)
-  if not hl or hl == 0 then return false, "HerosList null" end
+  if not hl or hl == 0 then log("FAIL: HerosList null"); return false, "HerosList null" end
   local ip = readQword(hl + 0x10)
-  if not ip or ip == 0 then return false, "HerosList items null" end
+  if not ip or ip == 0 then log("FAIL: HerosList items null"); return false, "HerosList items null" end
   local ph = readQword(ip + 0x20)
-  if not ph or ph == 0 then return false, "Hero not found" end
+  if not ph or ph == 0 then log("FAIL: Hero not found"); return false, "Hero not found" end
   S.hero = ph
   local ild = readQword(ph + 0x220)
   if not ild or ild == 0 then return false, "ItemListData null" end
@@ -1365,7 +1367,7 @@ function MT.hook.discover(fastMode)
   log("hero=" .. toHex(ph) .. " ild=" .. toHex(ild))
 
   local ail = readQword(S.ild + 0x28)
-  if not ail or ail == 0 then return false, "allItem list null" end
+  if not ail or ail == 0 then log("FAIL: allItem list null"); return false, "allItem list null" end
   local ic = readInteger(ail + 0x18)
   local ia = readQword(ail + 0x10)
   for i = 0, ic - 1 do
@@ -1374,7 +1376,8 @@ function MT.hook.discover(fastMode)
       if not S.itemKlass then S.itemKlass = readQword(it) end
     end
   end
-  if not S.itemKlass then return false, "No items in inventory" end
+  if not S.itemKlass then log("FAIL: No items in inventory (empty?)"); return false, "No items in inventory" end
+  log("Data OK: wd=" .. toHex(wd) .. " hero=" .. toHex(ph) .. " items=" .. ic)
 
   -- Try loading RVAs from cache (keyed by GA DLL size)
   local gaSize = getModuleSize("GameAssembly.dll") or 0
@@ -1526,9 +1529,16 @@ function MT.hook.discover(fastMode)
   log(string.format("RVAs: getItem=%s ctor=%s genWeapon=%s genTreasure=%s",
     tostring(RVA.getItem), tostring(RVA.ctor), tostring(equipDBs[1].genRVA), tostring(MT.hook.TREASURE_GEN_RVA)))
 
+  -- Count resolved RVAs
+  local rvaCount = 0
+  for _ in pairs(RVA) do rvaCount = rvaCount + 1 end
+  log("Resolved " .. rvaCount .. " RVAs")
+
   -- Install main-thread hook
+  log("Installing main-thread hook...")
   local hookOk, hookErr = MT.hook.installMainThreadHook()
-  if not hookOk then return false, "Hook: " .. (hookErr or "unknown") end
+  if not hookOk then log("FAIL: hook install: " .. tostring(hookErr)); return false, "Hook: " .. (hookErr or "unknown") end
+  log("Hook installed OK")
 
   local cmdBuf = getAddress("cmdBuf")
   S.cmdBuf = cmdBuf
