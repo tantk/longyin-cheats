@@ -28,7 +28,6 @@ local function _mtDiagCandidates()
     local ok, ceDir = pcall(getCheatEngineDir)
     if ok then add(ceDir) end
   end
-  add("C:\\temp")  -- ASCII-safe fallback for Chinese/non-ASCII usernames
   add(".")
   return out
 end

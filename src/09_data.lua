@@ -21,7 +21,6 @@ function MT.getTempPath()
     local ok, p = pcall(getCheatEngineDir)
     if ok and p then candidates[#candidates+1] = p end
   end
-  candidates[#candidates+1] = "C:\\temp"
   candidates[#candidates+1] = "."
   for _, base in ipairs(candidates) do
     local sep = (base:sub(-1) == "\\" or base:sub(-1) == "/") and "" or "\\"
