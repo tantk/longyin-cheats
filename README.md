@@ -6,17 +6,16 @@ A form-based Cheat Engine table for **LongYinLiZhiZhuan** (龙胤立志传), a m
 
 ## Screenshots
 
+### Martial Arts — 989 skills browser
+![Martial Arts](screenshot/martialart.png)
+
 | General | Sect |
 |---------|------|
 | ![General](screenshot/general.png) | ![Sect](screenshot/sect.png) |
 
-| Martial Arts | Items |
-|-------------|-------|
-| ![Martial Arts](screenshot/martialart.png) | ![Items](screenshot/items.png) |
-
-| Events |
-|--------|
-| ![Events](screenshot/event.png) |
+| Items | Events |
+|-------|--------|
+| ![Items](screenshot/items.png) | ![Events](screenshot/event.png) |
 
 ## Features
 
