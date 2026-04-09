@@ -73,17 +73,41 @@ function MT.il2cpp.init()
     error("GameController not found in any assembly - is game loaded?")
   end
 
-  -- Step 2: Find classes (1 call each)
+  -- Step 2: Find classes — allocate fresh buffer each time to avoid stale bytes
   local function findClass(name)
-    writeString(cn, name)
-    local k = executeCodeEx(0, nil, cfn, img, ns, cn)
-    return k ~= 0 and k or nil
+    local freshCn = allocateMemory(128)
+    writeBytes(freshCn, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)
+    writeString(freshCn, name)
+    local k = executeCodeEx(0, nil, cfn, img, ns, freshCn)
+    if not k or k == 0 then
+      -- Fallback: scan all assemblies
+      for i = 0, count - 1 do
+        local asmPtr = readQword(arr + i * 8)
+        if asmPtr and asmPtr ~= 0 then
+          local testImg = executeCodeEx(0, nil, exports.asmGetImage, asmPtr)
+          if testImg and testImg ~= 0 and testImg ~= img then
+            k = executeCodeEx(0, nil, cfn, testImg, ns, freshCn)
+            if k and k ~= 0 then break end
+          end
+        end
+      end
+    end
+    deAlloc(freshCn)
+    return (k and k ~= 0) and k or nil
   end
   if not gc then error("GameController not found - is game loaded?") end
   local gdc = findClass("GameDataController")
   local gd  = findClass("GlobalData")
   local hd  = findClass("HeroData")
   local bc  = findClass("BattleController")
+
+  -- Log which classes were found/missing for diagnostics
+  if MT.diag then
+    local function yn(v) return v and "Y" or "N" end
+    MT.diag(string.format("[il2cpp] classes: GC=%s GDC=%s GD=%s HD=%s BC=%s (img=%X, asmCount=%d)",
+      yn(gc), yn(gdc), yn(gd), yn(hd), yn(bc), img or 0, count or 0))
+  end
+
   deAlloc(ns); deAlloc(cn)
 
   local function klassData(k, instOff)
