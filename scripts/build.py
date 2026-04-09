@@ -123,7 +123,18 @@ def build():
     for sf in src_files:
         with open(sf, "r", encoding="utf-8") as f:
             parts.append(f.read())
-    combined = "\n".join(parts)
+    # Wrap modules after 00_init in pcall so load errors are visible
+    # 00_init.lua defines MT={} and must run unwrapped
+    init_part = parts[0]  # 00_init.lua
+    rest_parts = "\n".join(parts[1:])
+    combined = init_part + "\n" + \
+        'local _mtLoadOk, _mtLoadErr = pcall(function()\n' + \
+        rest_parts + "\n" + \
+        'end)\n' + \
+        'if not _mtLoadOk then\n' + \
+        '  MT._loadError = tostring(_mtLoadErr)\n' + \
+        '  print("[MT] ERROR: " .. MT._loadError)\n' + \
+        'end\n'
     with open(lua_script_path, "w", encoding="utf-8") as f:
         f.write(combined)
     print(f"[concat] {len(src_files)} src/*.lua → LuaScript.lua ({len(combined):,} chars)")

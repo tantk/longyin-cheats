@@ -36,6 +36,7 @@ _threadGatedControls = {}
 errorOnLookupFailure(false)
 MT = {}
 
+local _mtLoadOk, _mtLoadErr = pcall(function()
 -- src/01_log.lua — Debug logging (MT.log)
 -- ============================================================
 -- MT.log -- Debug Logging
@@ -4038,6 +4039,12 @@ if not _processWatcherInstalled then
 end
 
 print("[MT] Shared core loaded (v8)")
+
+end)
+if not _mtLoadOk then
+  MT._loadError = tostring(_mtLoadErr)
+  print("[MT] ERROR: " .. MT._loadError)
+end
 
   </LuaScript>
 </CheatTable>

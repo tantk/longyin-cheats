@@ -2,7 +2,8 @@
 {$lua}
 if syntaxcheck then return end
 if type(MT) ~= "table" or not MT.ui then
-  showMessage("请关闭CE后重新打开再加载CT\nPlease close CE and reopen, then load CT.")
+  local err = (type(MT) == "table" and MT._loadError) or "MT not defined"
+  showMessage("修改器加载失败 / Multi-Tool failed to load:\n\n" .. tostring(err) .. "\n\n请关闭CE后重新打开再加载CT\nPlease close CE completely, reopen, then load CT.")
   return
 end
 if _itemAdderForm then _itemAdderForm.destroy(); _itemAdderForm = nil end
