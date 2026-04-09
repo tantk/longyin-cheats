@@ -74,6 +74,36 @@ local function _mtTry(tag, fn)
   return ok, err
 end
 
+-- Rotate diag log: keep last 2 sessions so with new one there are 3 total
+pcall(function()
+  local f = _mtOpenDiagFile()
+  if not f then return end
+  f:close()
+  local rf = io.open(_mtDiagPath, "r")
+  if not rf then return end
+  local content = rf:read("*a")
+  rf:close()
+  -- Split by session markers
+  local sessions = {}
+  local cur = ""
+  for line in content:gmatch("[^\n]+") do
+    if line:find("===== CT LOAD START =====") then
+      if #cur &gt; 0 then sessions[#sessions + 1] = cur end
+      cur = line .. "\n"
+    else
+      cur = cur .. line .. "\n"
+    end
+  end
+  if #cur &gt; 0 then sessions[#sessions + 1] = cur end
+  -- Keep last 2 sessions (new one will be #3)
+  if #sessions &gt; 2 then
+    local wf = io.open(_mtDiagPath, "w")
+    if wf then
+      for i = #sessions - 1, #sessions do wf:write(sessions[i]) end
+      wf:close()
+    end
+  end
+end)
 _mtDiagWrite("===== CT LOAD START =====")
 _mtDiagWrite(string.format(
   "[pre] _maLoaderTimer=%s _maTabTimer=%s _skillLoaderTimer=%s _evtLoaderTimer=%s _staleCheckTimer=%s _flashTimers=%s _itemAdderForm=%s",
