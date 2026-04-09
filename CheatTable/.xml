@@ -110,28 +110,10 @@ _mtDiagWrite(string.format(
   _mtObjType(_evtLoaderTimer), _mtObjType(_staleCheckTimer), _mtObjType(_flashTimers), _mtObjType(_itemAdderForm)
 ))
 
--- Cleanup: disable stale timers, nil references. Do NOT call .destroy() —
--- it accesses Delphi objects that may be invalid, causing access violations.
-_mtTry("cleanup block", function()
-  local function disableTimer(name, t)
-    if t then _mtTry(name, function() t.Enabled = false end) end
-  end
-  disableTimer("_maLoaderTimer", _maLoaderTimer)
-  disableTimer("_maTabTimer", _maTabTimer)
-  disableTimer("_skillLoaderTimer", _skillLoaderTimer)
-  disableTimer("_evtLoaderTimer", _evtLoaderTimer)
-  disableTimer("_staleCheckTimer", _staleCheckTimer)
-  if type(_flashTimers) == "table" then
-    local n = 0
-    for t in pairs(_flashTimers) do
-      n = n + 1
-      _mtTry("flashTimer" .. n, function() t.Enabled = false end)
-    end
-    _mtDiagWrite("[cleanup] disabled " .. n .. " flash timers")
-  else
-    _mtDiagWrite("[cleanup] _flashTimers is " .. _mtObjType(_flashTimers))
-  end
-end)
+-- Cleanup: do NOT access any property on stale Delphi objects —
+-- even .Enabled = false triggers C-level access violations on destroyed objects.
+-- Just nil all references and let CE GC handle the rest.
+_mtDiagWrite("[cleanup] nil-ing stale references (no Delphi access)")
 _maLoaderTimer = nil
 _maTabTimer = nil
 _skillLoaderTimer = nil
