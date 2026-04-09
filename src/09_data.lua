@@ -24,7 +24,7 @@ function MT.data.loadFile(filename)
   if not content then
     local tf = findTableFile(filename)
     if tf then
-      local tmpPath = getTempFolder() .. filename
+      local tmpPath = (type(getTempFolder) == "function" and getTempFolder() or (os.getenv("TEMP") or ".") .. "\\") .. filename
       tf.saveToFile(tmpPath)
       local f = io.open(tmpPath, "r")
       if f then content = f:read("*a"); f:close() end
@@ -409,7 +409,7 @@ function MT.data.loadSkillsFull()
   if not content then
     local tf = findTableFile("skills_full.lua")
     if tf then
-      local tmp = getTempFolder() .. "skills_full.lua"
+      local tmp = (type(getTempFolder) == "function" and getTempFolder() or (os.getenv("TEMP") or ".") .. "\\") .. "skills_full.lua"
       tf.saveToFile(tmp)
       local f = io.open(tmp, "r")
       if f then content = f:read("*a"); f:close() end
