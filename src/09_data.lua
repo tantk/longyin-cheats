@@ -248,6 +248,7 @@ function MT.data.loadLiveSkills()
     local ac = readInteger(atkList + 0x18)
     if not ac or ac <= 0 then return "" end
     local ai = readQword(atkList + 0x10)
+    if not ai or ai == 0 then return "" end
     local ar = readQword(ai + 0x20)
     if not ar or ar == 0 then return "" end
     return (readInteger(ar + 0x14) or 0) .. "-" .. (readInteger(ar + 0x18) or 0)
@@ -275,6 +276,7 @@ function MT.data.loadLiveSkills()
     if not pl or pl == 0 then return {} end
     local cnt = readInteger(pl + 0x18)
     local pi = readQword(pl + 0x10)
+    if not pi or pi == 0 then return {} end
     local vals = {}
     for i = 0, math.min((cnt or 0) - 1, 5) do
       vals[i + 1] = readFloat(pi + 0x20 + i * 4)

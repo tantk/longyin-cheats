@@ -1611,7 +1611,7 @@ _evtLoaderTimer.Interval = 2000
 _evtLoaderTimer.OnTimer = function(t)
   local S = MT.hook.S
   if not S or not S.ready then return end  -- wait for Connect
-  t.Enabled = false; t.destroy()
+  t.Enabled = false; _evtLoaderTimer = nil
 
   pcall(function()
     _mtEvents = {}

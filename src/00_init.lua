@@ -102,9 +102,8 @@ pcall(function()
 end)
 _mtDiagWrite("===== CT LOAD START =====")
 _mtDiagWrite(string.format(
-  "[pre] _maLoaderTimer=%s _maTabTimer=%s _skillLoaderTimer=%s _evtLoaderTimer=%s _staleCheckTimer=%s _flashTimers=%s _itemAdderForm=%s",
-  _mtObjType(_maLoaderTimer), _mtObjType(_maTabTimer), _mtObjType(_skillLoaderTimer),
-  _mtObjType(_evtLoaderTimer), _mtObjType(_staleCheckTimer), _mtObjType(_flashTimers), _mtObjType(_itemAdderForm)
+  "[pre] _maTabTimer=%s _evtLoaderTimer=%s _staleCheckTimer=%s _flashTimers=%s _itemAdderForm=%s",
+  _mtObjType(_maTabTimer), _mtObjType(_evtLoaderTimer), _mtObjType(_staleCheckTimer), _mtObjType(_flashTimers), _mtObjType(_itemAdderForm)
 ))
 
 -- Cleanup strategy:
@@ -115,9 +114,7 @@ _mtDiagWrite("[cleanup] destroying stale form, nil-ing timer refs")
 if _itemAdderForm then
   pcall(function() _itemAdderForm.destroy() end)
 end
-_maLoaderTimer = nil
 _maTabTimer = nil
-_skillLoaderTimer = nil
 _evtLoaderTimer = nil
 -- _autoConnectTimer preserved for autoload_save.lua
 _staleCheckTimer = nil
