@@ -139,12 +139,14 @@ function MT.il2cpp.init()
     end
   end
   local gaSize = getModuleSize("GameAssembly.dll") or 0
-  print(string.format("[Long Yin Li Zhi Zhuan] Version %s %s (GA: %d bytes, %d/5 classes)", verStr, fixStr, gaSize, found))
+  local verMsg = string.format("[Long Yin Li Zhi Zhuan] Version %s %s (GA: %d bytes, %d/5 classes)", verStr, fixStr, gaSize, found)
+  if MT.diag then MT.diag(verMsg) end
+  if MT.log then MT.log(verMsg) end
 
   return _il2cppCache
 end
 
 function MT.il2cpp.reset()
   _il2cppCache = nil
-  print("[il2cpp] Cache cleared - will re-init on next cheat activation")
+  if MT.diag then MT.diag("[il2cpp] Cache cleared") end
 end

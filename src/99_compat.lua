@@ -58,4 +58,5 @@ if not _processWatcherInstalled then
   _processWatcherInstalled = true
 end
 
-print("[MT] Shared core loaded (v8)")
+-- print suppressed — opens Lua Engine window which confuses users
+if MT.diag then MT.diag("[MT] Shared core loaded (v8)") end
