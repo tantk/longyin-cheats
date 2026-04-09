@@ -137,8 +137,8 @@ function MT.data.readSpeDict(ptr, showPct)
   local total = 0
   for i = 0, cnt - 1 do
     local base = entries + 0x20 + i * 16
-    local hash = readInteger(base)  -- skip tombstoned entries (hashCode < 0)
-    if not hash or hash < 0 then goto nextEntry end
+    local hash = readInteger(base)  -- skip tombstoned entries (MSB set = deleted)
+    if not hash or hash >= 0x80000000 then goto nextEntry end
     local key = readInteger(base + 8)
     local val = readFloat(base + 12)
     if statNames[key] then

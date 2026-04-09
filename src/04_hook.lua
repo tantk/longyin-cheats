@@ -329,6 +329,7 @@ function MT.hook.installMainThreadHook()
   -- This ensures E9 rel32 can reach hookCode from the patch target.
   local hookMem = allocateMemory(8192, S.base) or allocateMemory(8192)
   if not hookMem or hookMem == 0 then return false, "Failed to allocate hook memory" end
+  _ia_hookMemBase = hookMem  -- store for Lua deAlloc at cleanup (AA dealloc can't free Lua allocs)
   local cmdBufMem = hookMem
   local hookCodeMem = hookMem + 0x100
   local origUpdateMem = hookMem + 0x1100
@@ -1212,7 +1213,13 @@ function MT.hook.cleanup()
   tryDealloc("hookCode")
   tryDealloc("origUpdatePtr")
 
-  -- 5. Reset state
+  -- 5. Free hookMem block (AA dealloc can't free Lua allocateMemory)
+  if _ia_hookMemBase then
+    pcall(deAlloc, _ia_hookMemBase)
+    _ia_hookMemBase = nil
+  end
+
+  -- 6. Reset state
   MT.hook.hookInstalled = false
   MT.hook.S = {}
   MT.hook.WK = { code = nil, data = nil, str = nil }
@@ -1237,7 +1244,7 @@ function MT.hook.mainThreadGetItem(itemDataPtr, timeout)
   while elapsed < timeout do
     local status = readInteger(S.cmdBuf + 0x04)
     if status == 1 then
-      return true, readQword(S.cmdBuf + 0x18)
+      return true  -- GetItem is void, no return value
     elseif status == 2 then
       return false, "Command failed (status=2)"
     end
