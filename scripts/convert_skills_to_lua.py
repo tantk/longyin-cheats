@@ -15,6 +15,7 @@ FIELDS = [
     "forceID", "forceName", "manaCost", "baseDmg", "atkRange",
     "upgrade", "upgradeTotal", "equip", "use", "effects",
     "atkPosture", "defPosture", "weapon", "maxUse", "dmgBonus", "desc",
+    "dmgRange",
 ]
 
 INT_FIELDS = {"id", "type", "rareLv", "forceID", "maxUse"}

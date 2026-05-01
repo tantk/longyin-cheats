@@ -287,6 +287,16 @@ function MT.data.loadLiveSkills()
     return (readInteger(ar + 0x14) or 0) .. "-" .. (readInteger(ar + 0x18) or 0)
   end
 
+  local function readDmgRange(sk)
+    -- damageRangeData at sk+0x78 (SkillDamageRangeData: rangeType@0x10, min@0x14, max@0x18)
+    local dr = readQword(sk + 0x78)
+    if not dr or dr == 0 then return "" end
+    local mn = readInteger(dr + 0x14) or 0
+    local mx = readInteger(dr + 0x18) or 0
+    if mn == 0 and mx == 0 then return "" end
+    return mn .. "-" .. mx
+  end
+
   local function readSpeEffects(sk)
     local speList = readQword(sk + 0xB0)
     if not speList or speList == 0 then return "" end
@@ -341,6 +351,7 @@ function MT.data.loadLiveSkills()
           baseDmg = baseDmg,
           expRatio = readFloat(sk + 0x40),
           atkRange = readAtkRange(sk),
+          dmgRange = readDmgRange(sk),
           upgrade = "", upgradeTotal = 0, equip = "", use = "",
           effects = readSpeEffects(sk),
           weapon = readStr(readQword(sk + 0x98)),
@@ -481,6 +492,7 @@ function MT.data.loadSkillsFull()
       atkPosture = parsePosture(row[17]), defPosture = parsePosture(row[18]),
       weapon = row[19] or "", maxUse = tonumber(row[20]) or 0,
       dmgBonus = row[21] or "", desc = row[22] or "",
+      dmgRange = row[23] or "",
     }
   end
   MT.data._parseSkillEffects(skills)

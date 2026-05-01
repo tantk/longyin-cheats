@@ -54,7 +54,7 @@ end
 function MT.cheats.stats.setSkillLimit(val)
   local limit = tonumber(val) or 99
   local c = MT.il2cpp.init()
-  if not c:ensure("gd", "GlobalData", nil, {skillOff=0x130}) then error("GlobalData未加载 GlobalData not loaded") end
+  if not c:ensure("gd", "GlobalData", nil, {skillOff=0x138}) then error("GlobalData未加载 GlobalData not loaded") end
   local listPtr = readQword(c.gd.static + c.gd.skillOff)
   if not listPtr or listPtr == 0 then error("武学数据未找到 MaxSkillNum list not found") end
   local count = readInteger(listPtr + 0x18)

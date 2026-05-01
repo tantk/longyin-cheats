@@ -33,7 +33,7 @@ function MT.il2cpp.init()
     gc_inst = 0x0,
     gdc_inst = 0x20,
     gdc_tagBase = 0x198,
-    gd_skill = 0x130,
+    gd_skill = 0x138,
     bc_inst = 0x50,
   }
 
@@ -136,7 +136,7 @@ function MT.il2cpp.init()
   end
 
   -- Try to resolve missing classes on next access
-  -- extraFields is an optional table of additional fields to attach (e.g., {skillOff=0x130})
+  -- extraFields is an optional table of additional fields to attach (e.g., {skillOff=0x138})
   _il2cppCache.ensure = function(self, field, className, instOff, extraFields)
     local existing = self[field]
     if existing then
@@ -173,12 +173,12 @@ function MT.il2cpp.init()
   if gd then
     local gdStatic = readQword(gd + 0xB8)
     if gdStatic and gdStatic ~= 0 then
-      local vnPtr = readQword(gdStatic + 0x68)
+      local vnPtr = readQword(gdStatic + 0x70)
       if vnPtr and vnPtr ~= 0 then
         local nl = readInteger(vnPtr + 0x10)
         if nl and nl > 0 then verStr = readString(vnPtr + 0x14, nl*2, true) or "?" end
       end
-      local fnPtr = readQword(gdStatic + 0x70)
+      local fnPtr = readQword(gdStatic + 0x78)
       if fnPtr and fnPtr ~= 0 then
         local nl = readInteger(fnPtr + 0x10)
         if nl and nl > 0 then fixStr = readString(fnPtr + 0x14, nl*2, true) or "?" end

@@ -208,7 +208,7 @@ function MT.il2cpp.init()
     gc_inst = 0x0,
     gdc_inst = 0x20,
     gdc_tagBase = 0x198,
-    gd_skill = 0x130,
+    gd_skill = 0x138,
     bc_inst = 0x50,
   }
 
@@ -311,7 +311,7 @@ function MT.il2cpp.init()
   end
 
   -- Try to resolve missing classes on next access
-  -- extraFields is an optional table of additional fields to attach (e.g., {skillOff=0x130})
+  -- extraFields is an optional table of additional fields to attach (e.g., {skillOff=0x138})
   _il2cppCache.ensure = function(self, field, className, instOff, extraFields)
     local existing = self[field]
     if existing then
@@ -348,12 +348,12 @@ function MT.il2cpp.init()
   if gd then
     local gdStatic = readQword(gd + 0xB8)
     if gdStatic and gdStatic ~= 0 then
-      local vnPtr = readQword(gdStatic + 0x68)
+      local vnPtr = readQword(gdStatic + 0x70)
       if vnPtr and vnPtr ~= 0 then
         local nl = readInteger(vnPtr + 0x10)
         if nl and nl &gt; 0 then verStr = readString(vnPtr + 0x14, nl*2, true) or "?" end
       end
-      local fnPtr = readQword(gdStatic + 0x70)
+      local fnPtr = readQword(gdStatic + 0x78)
       if fnPtr and fnPtr ~= 0 then
         local nl = readInteger(fnPtr + 0x10)
         if nl and nl &gt; 0 then fixStr = readString(fnPtr + 0x14, nl*2, true) or "?" end
@@ -468,7 +468,7 @@ MT.hook.hookInstalled = false
 MT.hook.WK = { code = nil, data = nil, str = nil }
 MT.hook.RVA = {}
 MT.hook.AOB_SIGS = {
-  setBook   = {sig="48 8B 43 68 48 85 C0 0F 84 ?? ?? ?? ?? 89 78 10", off=0x3F},
+  setBook   = {sig="48 8B 43 70 48 85 C0 0F 84 ?? ?? ?? ?? 89 78 10", off=0x3F},
   setMat    = {sig="89 6B 18 89 73 3C 89 7B 40", off=0x48},
   ctor      = {sig="C7 47 44 00 00 80 3F 48 8B CF E8 ?? ?? ?? ?? 89 5F 14 83 FB 06", off=0x6A},
   clone     = {sig="48 89 5C 24 08 57 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8B F8 48 85 C0 74", off=0},
@@ -1564,8 +1564,8 @@ function MT.hook.discover(fastMode)
   if c.gd then
     pcall(function()
       local gs = readQword(c.findClass("GlobalData") + 0xB8)
-      local vn = readQword(gs + 0x68)
-      local fn = readQword(gs + 0x70)
+      local vn = readQword(gs + 0x70)
+      local fn = readQword(gs + 0x78)
       local v = readString(vn + 0x14, readInteger(vn + 0x10) * 2, true)
       local f = readString(fn + 0x14, readInteger(fn + 0x10) * 2, true)
       verInfo = v .. " " .. f
@@ -3241,6 +3241,16 @@ function MT.data.loadLiveSkills()
     return (readInteger(ar + 0x14) or 0) .. "-" .. (readInteger(ar + 0x18) or 0)
   end
 
+  local function readDmgRange(sk)
+    -- damageRangeData at sk+0x78 (SkillDamageRangeData: rangeType@0x10, min@0x14, max@0x18)
+    local dr = readQword(sk + 0x78)
+    if not dr or dr == 0 then return "" end
+    local mn = readInteger(dr + 0x14) or 0
+    local mx = readInteger(dr + 0x18) or 0
+    if mn == 0 and mx == 0 then return "" end
+    return mn .. "-" .. mx
+  end
+
   local function readSpeEffects(sk)
     local speList = readQword(sk + 0xB0)
     if not speList or speList == 0 then return "" end
@@ -3295,6 +3305,7 @@ function MT.data.loadLiveSkills()
           baseDmg = baseDmg,
           expRatio = readFloat(sk + 0x40),
           atkRange = readAtkRange(sk),
+          dmgRange = readDmgRange(sk),
           upgrade = "", upgradeTotal = 0, equip = "", use = "",
           effects = readSpeEffects(sk),
           weapon = readStr(readQword(sk + 0x98)),
@@ -3435,6 +3446,7 @@ function MT.data.loadSkillsFull()
       atkPosture = parsePosture(row[17]), defPosture = parsePosture(row[18]),
       weapon = row[19] or "", maxUse = tonumber(row[20]) or 0,
       dmgBonus = row[21] or "", desc = row[22] or "",
+      dmgRange = row[23] or "",
     }
   end
   MT.data._parseSkillEffects(skills)
@@ -3716,7 +3728,7 @@ end
 function MT.cheats.stats.setSkillLimit(val)
   local limit = tonumber(val) or 99
   local c = MT.il2cpp.init()
-  if not c:ensure("gd", "GlobalData", nil, {skillOff=0x130}) then error("GlobalData未加载 GlobalData not loaded") end
+  if not c:ensure("gd", "GlobalData", nil, {skillOff=0x138}) then error("GlobalData未加载 GlobalData not loaded") end
   local listPtr = readQword(c.gd.static + c.gd.skillOff)
   if not listPtr or listPtr == 0 then error("武学数据未找到 MaxSkillNum list not found") end
   local count = readInteger(listPtr + 0x18)

@@ -11,7 +11,7 @@ MT.hook.hookInstalled = false
 MT.hook.WK = { code = nil, data = nil, str = nil }
 MT.hook.RVA = {}
 MT.hook.AOB_SIGS = {
-  setBook   = {sig="48 8B 43 68 48 85 C0 0F 84 ?? ?? ?? ?? 89 78 10", off=0x3F},
+  setBook   = {sig="48 8B 43 70 48 85 C0 0F 84 ?? ?? ?? ?? 89 78 10", off=0x3F},
   setMat    = {sig="89 6B 18 89 73 3C 89 7B 40", off=0x48},
   ctor      = {sig="C7 47 44 00 00 80 3F 48 8B CF E8 ?? ?? ?? ?? 89 5F 14 83 FB 06", off=0x6A},
   clone     = {sig="48 89 5C 24 08 57 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 48 8B F8 48 85 C0 74", off=0},
@@ -1107,8 +1107,8 @@ function MT.hook.discover(fastMode)
   if c.gd then
     pcall(function()
       local gs = readQword(c.findClass("GlobalData") + 0xB8)
-      local vn = readQword(gs + 0x68)
-      local fn = readQword(gs + 0x70)
+      local vn = readQword(gs + 0x70)
+      local fn = readQword(gs + 0x78)
       local v = readString(vn + 0x14, readInteger(vn + 0x10) * 2, true)
       local f = readString(fn + 0x14, readInteger(fn + 0x10) * 2, true)
       verInfo = v .. " " .. f
