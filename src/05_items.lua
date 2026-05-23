@@ -138,12 +138,23 @@ function MT.items.addEquipGenerated(genRVA, dbIndex, bossLv, qualityRate, timeou
       local itemName = MT.hook.getItemName(newItem)
       log("Generated: " .. itemName .. " at " .. toHex(newItem))
       -- Apply affix preset if enabled (replaces random extraAddData)
+      local affixRoot = nil
       if MT.cheats and MT.cheats.affix and MT.cheats.affix.enabled then
-        local affixOk, affixErr = MT.cheats.affix.applyTo(newItem)
-        if not affixOk then log("Affix preset failed: " .. tostring(affixErr)) end
+        local rootOk, rootResult = MT.cheats.affix.rootItem(newItem)
+        if rootOk and rootResult and rootResult ~= 0 then
+          affixRoot = rootResult
+          local affixOk, affixErr = MT.cheats.affix.applyTo(newItem)
+          if not affixOk then log("Affix preset failed: " .. tostring(affixErr)) end
+        else
+          log("Affix preset skipped: failed to root generated item (" .. tostring(rootResult) .. ")")
+        end
       end
       -- Now add to inventory via cmd=1
       local ok2, _ = MT.hook.mainThreadGetItem(newItem)
+      if affixRoot then
+        local freeOk, freeErr = MT.cheats.affix.releaseRoot(affixRoot)
+        if not freeOk then log("Affix preset root release failed: " .. tostring(freeErr)) end
+      end
       if not ok2 then return false, "GetItem failed" end
       return true, itemName
     elseif status == 2 then
@@ -306,27 +317,75 @@ MT.cheats.affix = {
 }
 
 -- MI cache keyed by GA base — auto-invalidates on game restart.
-local _affixMI = {gaBase = nil, reset = nil, set = nil}
+local _affixMI = {gaBase = nil, reset = nil, set = nil, countValue = nil}
+local _affixGCHandleNew = nil
+local _affixGCHandleFree = nil
+
+-- Compatibility for older UI code: no affix IDs are blocked.
+function MT.cheats.affix.blockReason(statID) return nil end
+function MT.cheats.affix.isBlockedStatID(statID) return false end
+
+local function _validateAffixRow(row)
+  local sid = tonumber(row and row.statID)
+  local value = tonumber(row and row.value)
+  if not sid or sid < 0 or sid > 214 or sid ~= math.floor(sid) then
+    return false, nil, nil, "invalid stat id"
+  end
+  if not value or value == 0 then return false, sid, value, "zero value" end
+  if value ~= value or value == math.huge or value == -math.huge then
+    return false, sid, value, "non-finite value"
+  end
+  return true, sid, value
+end
 
 local function _resolveAffixMethods()
   local c = MT.il2cpp.init()
-  if _affixMI.gaBase == c._gaBase and _affixMI.reset and _affixMI.set then return true end
-  _affixMI.reset = nil; _affixMI.set = nil
+  if _affixMI.gaBase == c._gaBase and _affixMI.reset and _affixMI.set and _affixMI.countValue then return true end
+  _affixMI.reset = nil; _affixMI.set = nil; _affixMI.countValue = nil
   local cls = c.findClass("HeroSpeAddData")
   if not cls then return false, "HeroSpeAddData class not found" end
+  local itemCls = c.findClass("ItemData")
+  if not itemCls then return false, "ItemData class not found" end
   local getMeth = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
   if not getMeth or getMeth == 0 then return false, "class_get_method_from_name unavailable" end
   local nmR = allocateMemory(16); writeString(nmR, "Reset")
   local nmS = allocateMemory(16); writeString(nmS, "Set")
+  local nmC = allocateMemory(32); writeString(nmC, "CountValueAndWeight")
   local r = executeCodeEx(0, nil, getMeth, cls, nmR, 0)
   local s = executeCodeEx(0, nil, getMeth, cls, nmS, 2)
-  deAlloc(nmR); deAlloc(nmS)
+  local cv = executeCodeEx(0, nil, getMeth, itemCls, nmC, 0)
+  deAlloc(nmR); deAlloc(nmS); deAlloc(nmC)
   if not r or r == 0 then return false, "Reset MI missing" end
   if not s or s == 0 then return false, "Set MI missing" end
+  if not cv or cv == 0 then return false, "CountValueAndWeight MI missing" end
   _affixMI.gaBase = c._gaBase
   _affixMI.reset = r
   _affixMI.set = s
+  _affixMI.countValue = cv
   return true
+end
+
+local function _resolveGCHandleExports()
+  if _affixGCHandleNew and _affixGCHandleFree then return true end
+  _affixGCHandleNew = getAddress("GameAssembly.il2cpp_gchandle_new")
+  _affixGCHandleFree = getAddress("GameAssembly.il2cpp_gchandle_free")
+  if not _affixGCHandleNew or _affixGCHandleNew == 0 then return false, "gchandle_new missing" end
+  if not _affixGCHandleFree or _affixGCHandleFree == 0 then return false, "gchandle_free missing" end
+  return true
+end
+
+function MT.cheats.affix.rootItem(itemPtr)
+  if not itemPtr or itemPtr == 0 then return false, "null item" end
+  local ok, err = _resolveGCHandleExports()
+  if not ok then return false, err end
+  return MT.hook.mainThreadSimpleCall(_affixGCHandleNew, itemPtr)
+end
+
+function MT.cheats.affix.releaseRoot(handle)
+  if not handle or handle == 0 then return true end
+  local ok, err = _resolveGCHandleExports()
+  if not ok then return false, err end
+  return MT.hook.mainThreadSimpleCall(_affixGCHandleFree, handle)
 end
 
 -- Persistence (preset only; toggle state is per-session).
@@ -377,19 +436,28 @@ function MT.cheats.affix.applyTo(itemPtr)
   local keyBuf = allocateMemory(4)
   local valBuf = allocateMemory(4)
   local applied = 0
+  local skipped = 0
   for _, row in ipairs(MT.cheats.affix.preset) do
-    if row.statID and row.value and row.value ~= 0 then
-      writeInteger(keyBuf, row.statID)
-      writeFloat(valBuf, row.value)
+    local rowOk, sid, value, reason = _validateAffixRow(row)
+    if rowOk then
+      writeInteger(keyBuf, sid)
+      writeFloat(valBuf, value)
       ok, err = MT.hook.invokeRuntime(extra, _affixMI.set, {keyBuf, valBuf})
       if not ok then
         deAlloc(keyBuf); deAlloc(valBuf)
-        return false, string.format("Set(%d,%.1f): %s", row.statID, row.value, tostring(err))
+        return false, string.format("Set(%d,%g): %s", sid, value, tostring(err))
       end
       applied = applied + 1
+    elseif reason ~= "zero value" then
+      skipped = skipped + 1
+      log(string.format("Affix preset skipped %s: %s", tostring(sid or "?"), tostring(reason)))
     end
   end
   deAlloc(keyBuf); deAlloc(valBuf)
-  log(string.format("Affix preset applied: %d stats", applied))
+  if applied > 0 then
+    ok, err = MT.hook.invokeRuntime(itemPtr, _affixMI.countValue, nil)
+    if not ok then log("Affix preset CountValueAndWeight failed: " .. tostring(err)) end
+  end
+  log(string.format("Affix preset applied: %d stats, skipped: %d", applied, skipped))
   return true
 end

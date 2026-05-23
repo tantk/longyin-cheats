@@ -1132,10 +1132,13 @@ do
   local _affixRowH = 28
   local _affixViewRows = 8
   local _affixPanelPad = 8
+  local _affixToggleW = 300
+  local _affixActionBtnW = 92
+  local _affixActionRowW = _affixToggleW + 14 + _affixActionBtnW + 14 + _affixActionBtnW
   local affixScroll = createPanel(L2.parent)
   affixScroll.Left = L2.x0
   affixScroll.Top = L2.y
-  affixScroll.Width = L2.btnW + 140
+  affixScroll.Width = _affixActionRowW
   affixScroll.Height = _affixPanelPad + _affixViewRows * _affixRowH
   affixScroll.BevelOuter = 1
   L2.y = L2.y + affixScroll.Height + 8
@@ -1268,20 +1271,19 @@ do
 
   -- Buttons OUTSIDE the scroll viewport (always visible)
   r = L2:inlineRow()
-  local chkApply = createCheckBox(L2.parent)
-  chkApply.Left = L2.x0; chkApply.Top = L2.y + 6
-  chkApply.Width = 200
-  chkApply.Caption = "应用预设 Apply Preset"
-  chkApply.OnChange = function()
-    if chkApply.Checked then
+  local _, btnApply = MT.ui.makeToggle(L2.parent, r.x, r.y, _affixToggleW, r.h,
+    "应用预设 Preset",
+    function()
       _syncAffixPreset()
       MT.cheats.affix.enabled = true
-    else
+    end,
+    function()
       MT.cheats.affix.enabled = false
     end
-  end
-  r.x = r.x + chkApply.Width + r.spacing
-  r:button("清空 Clear", 100, function()
+  )
+  btnApply.Font.Style = fsBold
+  r.x = r.x + _affixToggleW + r.spacing
+  r:button("清空", _affixActionBtnW, function()
     for _, p in ipairs(_affixRows) do
       p.cmb._statID = nil
       p.cmb.ItemIndex = 0
@@ -1290,7 +1292,7 @@ do
     MT.cheats.affix.preset = {}
     if MT.cheats.affix.save then pcall(MT.cheats.affix.save) end
   end)
-  r:button("+ 增加行 Add Row", 130, function()
+  r:button("+ 行Row", _affixActionBtnW, function()
     _addAffixRow()
   end)
   L2:advanceRow()

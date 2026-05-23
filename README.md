@@ -17,13 +17,17 @@ A form-based Cheat Engine table for **LongYinLiZhiZhuan** (龙胤立志传), a m
 |-------|--------|
 | ![Items](screenshot/items.png) | ![Events](screenshot/event.png) |
 
+### City — building & road planner
+![City](screenshot/city.png)
+
 ## Features
 
 - **General**: Money, Sect Currency, Faction Contribution, Meteorite, Stat Caps, Talent Slots/Points, Fame, NPC Favor, Faction Affinity, Skill Limit, Combat/Living EXP%, Restore HP, Clear Injuries, Battle Speed, Enemy 1HP, Horse Speed, Dungeon Reveal, Infinite Stamina, Character Creation (Attribute/Fight/Living/Talent Points & Slots)
 - **Sect**: Member Limit, Sect-wide Talents/Prodigy/Loyalty/Skill Slots, Max Resources, No Cost, Instant Research/Buildings, Generate Hero
 - **Martial Arts**: 989 skills browser with sorting, filtering, dynamic stat columns, one-click book adding
-- **Items**: Medicine, Food, Horse, Materials, Equipment (with sub-type), Treasures, Max Rarity
+- **Items**: Medicine, Food, Horse, Materials, Equipment (with sub-type), Treasures, Max Rarity, **Affix Preset** — replace a generated equipment's random affixes with your own chosen stats (searchable stat picker, scrollable rows)
 - **Events**: 106 events with category filter, search, difficulty control, Spawn Here / Spawn World Event
+- **City**: Per-area tile grid — swap/place buildings with a chosen level, delete buildings, upgrade all roads in an area, edit a single road's level on the selected tile
 
 ## Requirements
 
@@ -97,8 +101,9 @@ This project is provided for educational and personal use. Use at your own risk.
 - **通用**：银两、门派贡献、外门贡献、陨铁、属性上限、天赋槽/天赋点、声望、NPC好感、门派好感、武学上限、武学/生活经验倍率、恢复生命、清除伤势、战斗加速、敌人1血、坐骑加速、迷宫全开、无限耐力、角色创建（属性点/武学点/生活点/天赋点和天赋槽）
 - **门派**：人数上限、全派天赋点/天赋槽/天才+博学/忠诚满/武学槽满、资源填满、无消耗、瞬间研究/建筑、生成角色
 - **武学**：989种武学浏览器，支持排序、筛选、动态属性列、一键添加秘籍
-- **物品**：药品、食物、坐骑、材料、装备（含子类型）、珍品、品质全满
+- **物品**：药品、食物、坐骑、材料、装备（含子类型）、珍品、品质全满、**随机词条预设** — 将生成装备的随机词条替换为自选属性（可搜索属性、可滚动行）
 - **事件**：106个事件，分类筛选、搜索、自定义难度、生成到此处/生成世界事件
+- **城市**：分区域地块网格 — 替换/放置建筑并设置等级、拆除建筑、升级全区道路、修改所选地块单条道路的等级
 
 ## 使用要求
 

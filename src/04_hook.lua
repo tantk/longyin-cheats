@@ -1259,6 +1259,26 @@ function MT.hook.mainThreadGetItem(itemDataPtr, timeout)
   return false, msg
 end
 
+function MT.hook.mainThreadSimpleCall(funcAddr, arg, timeout)
+  local S = MT.hook.S
+  if not S.cmdBuf then return false, "Not connected" end
+  if not funcAddr or funcAddr == 0 then return false, "Function not resolved" end
+  timeout = timeout or 2000
+  writeQword(S.cmdBuf + 0x08, arg or 0)
+  writeQword(S.cmdBuf + 0x68, funcAddr)
+  writeInteger(S.cmdBuf + 0x04, 0)
+  writeInteger(S.cmdBuf, 6)
+  local elapsed = 0
+  while elapsed < timeout do
+    local status = readInteger(S.cmdBuf + 0x04)
+    if status == 1 then return true, readQword(S.cmdBuf + 0x08) end
+    if status == 2 then return false, "SimpleCall failed" end
+    sleep(8)
+    elapsed = elapsed + 8
+  end
+  return false, "SimpleCall timeout"
+end
+
 function MT.hook.mainThreadCreateAndAdd(itemType, setupFunc, arg1, arg2, arg3, timeout)
   local S = MT.hook.S
   local RVA = MT.hook.RVA
