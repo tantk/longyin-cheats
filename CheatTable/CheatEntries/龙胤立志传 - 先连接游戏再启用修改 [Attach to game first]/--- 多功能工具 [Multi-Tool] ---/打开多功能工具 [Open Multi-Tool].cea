@@ -6,6 +6,12 @@ if type(MT) ~= "table" or not MT.ui then
   showMessage("修改器加载失败 / Multi-Tool failed to load:\n\n" .. tostring(err) .. "\n\n请关闭CE后重新打开再加载CT\nPlease close CE completely, reopen, then load CT.")
   return
 end
+if _mtDestroyAffixInnerForm then
+  _mtDestroyAffixInnerForm("enable-start")
+elseif _G._affixInnerForm then
+  pcall(function() _G._affixInnerForm:destroy() end)
+  _G._affixInnerForm = nil
+end
 if _itemAdderForm then _itemAdderForm.destroy(); _itemAdderForm = nil end
 
 local _formOk, _formErr = pcall(function()
@@ -1134,22 +1140,11 @@ do
   affixScroll.BevelOuter = 1
   L2.y = L2.y + affixScroll.Height + 8
 
-  -- Kill any leftover inner forms from a previous session — both the
-  -- explicitly tracked one and any orphan UDF_* forms still hanging around.
-  if _G._affixInnerForm then
-    pcall(function() _G._affixInnerForm:destroy() end)
-    _G._affixInnerForm = nil
-  end
-  pcall(function()
-    for i = getFormCount() - 1, 0, -1 do
-      local f = getForm(i)
-      if f and f.Caption and f.Caption:find("^UDF_") and type(f.Parent) == "nil" then
-        pcall(function() f:destroy() end)
-      end
-    end
-  end)
+  -- Kill any leftover inner form before creating the new embedded scroll form.
+  if _mtDestroyAffixInnerForm then _mtDestroyAffixInnerForm("affix-create") end
 
   local affixInner = createForm(false)
+  pcall(function() affixInner.Caption = _MT_AFFIX_INNER_CAPTION or "__MT_AFFIX_INNER_FORM__" end)
   pcall(function() affixInner.BorderStyle = 0 end)
   pcall(function() affixInner.Parent = affixScroll end)
   -- IMPORTANT: do NOT use Align — CE Lua's wrapper silently rejects it,
@@ -1228,15 +1223,26 @@ do
     end
   end
 
+  -- Do not derive affix row columns from TLabel.Width here. Labels created
+  -- while the embedded form is still being shown can report the stale default
+  -- width (65), while rows added later report their rendered text width.
+  local _affixNumColW = 65
+  local _affixComboW = 240
+  local _affixValueLabelW = 65
+  local _affixEditW = 70
+
   local function _addAffixRow()
     local n = #_affixRows + 1
     local row = LA:inlineRow()
     row:label(string.format("%d:", n))
-    local cmb = row:combo({"(无 None)"}, 240)
+    row.x = row.x0 + _affixNumColW
+    local cmb = row:combo({"(无 None)"}, _affixComboW)
     cmb._statID = nil
     cmb.ItemIndex = 0
+    row.x = row.x0 + _affixNumColW + _affixComboW + row.spacing
     row:label("值 Value:")
-    local edt = row:edit("0", 70)
+    row.x = row.x0 + _affixNumColW + _affixComboW + row.spacing + _affixValueLabelW
+    local edt = row:edit("0", _affixEditW)
     table.insert(_affixRows, {cmb = cmb, edt = edt})
     _rebuildCombo(cmb, (edtAffixSearch.Text or ""):lower())
     pcall(function() cmb.OnChange = _syncAffixPreset end)
@@ -2039,6 +2045,7 @@ _itemAdderForm = frm
 
 -- Close handler: kill all timers to prevent C stack overflow from _index recursion
 frm.OnClose = function(sender, action)
+  if _mtDestroyAffixInnerForm then _mtDestroyAffixInnerForm("main-form-close") end
   _itemAdderForm = nil
   _mtStatusLbl = nil
   -- Kill named timers
@@ -2217,6 +2224,7 @@ if not _formOk then
   local msg = tostring(_formErr)
   if MT.diag then MT.diag("[form] CREATION ERROR: " .. msg) end
   showMessage("多功能工具创建失败 / Multi-Tool form error:\n\n" .. msg .. "\n\n请截图此错误并反馈\nPlease screenshot this error and report it.")
+  if _mtDestroyAffixInnerForm then _mtDestroyAffixInnerForm("form-error") end
   pcall(function() if _itemAdderForm then _itemAdderForm.destroy() end end)
   _itemAdderForm = nil
 end
@@ -2231,7 +2239,9 @@ pcall(function()
   -- Inner affix scroll form is a top-level TForm (created via createForm and
   -- reparented into the panel). VCL won't destroy it when the panel goes away,
   -- so we have to kill it explicitly or it becomes a zombie.
-  if _G._affixInnerForm then
+  if _mtDestroyAffixInnerForm then
+    _mtDestroyAffixInnerForm("disable")
+  elseif _G._affixInnerForm then
     pcall(function() _G._affixInnerForm:destroy() end)
     _G._affixInnerForm = nil
   end

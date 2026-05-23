@@ -76,6 +76,58 @@ local function _mtTry(tag, fn)
   return ok, err
 end
 
+_MT_AFFIX_INNER_CAPTION = "__MT_AFFIX_INNER_FORM__"
+
+local function _mtLooksLikeAffixInnerForm(f)
+  local count = 0
+  if not pcall(function() count = f.ControlCount or 0 end) then return false end
+  local hasRowLabel = false
+  local hasValueLabel = false
+  for i = 0, count - 1 do
+    local child = nil
+    pcall(function() child = f.Controls[i] end)
+    if child then
+      local cap = ""
+      pcall(function() cap = tostring(child.Caption or "") end)
+      if cap:match("^%d+:%s*$") then hasRowLabel = true end
+      if cap == "值 Value:" then hasValueLabel = true end
+      if hasRowLabel and hasValueLabel then return true end
+    end
+  end
+  return false
+end
+
+function _mtDestroyAffixInnerForm(reason)
+  local marker = _MT_AFFIX_INNER_CAPTION
+  local tracked = rawget(_G, "_affixInnerForm")
+  local function destroyOne(f, tag)
+    if not f then return end
+    _mtTry("destroy affix inner " .. tostring(tag), function()
+      pcall(function() f.Visible = false end)
+      f.destroy()
+    end)
+  end
+
+  destroyOne(tracked, reason or "tracked")
+  _G._affixInnerForm = nil
+
+  _mtTry("sweep affix inner forms", function()
+    if type(getFormCount) ~= "function" or type(getForm) ~= "function" then return end
+    for i = getFormCount() - 1, 0, -1 do
+      local f = getForm(i)
+      if f and f ~= tracked then
+        local caption = ""
+        local parent = nil
+        pcall(function() caption = tostring(f.Caption or "") end)
+        pcall(function() parent = f.Parent end)
+        local owned = caption == marker
+        local legacyOrphan = parent == nil and caption:find("^UDF_") and _mtLooksLikeAffixInnerForm(f)
+        if owned or legacyOrphan then destroyOne(f, reason or "sweep") end
+      end
+    end
+  end)
+end
+
 -- Rotate diag log: keep N-1 old sessions + 1 new = N total
 local DIAG_KEEP_SESSIONS = 3
 pcall(function()
@@ -109,8 +161,8 @@ pcall(function()
 end)
 _mtDiagWrite("===== CT LOAD START =====")
 _mtDiagWrite(string.format(
-  "[pre] _maTabTimer=%s _evtLoaderTimer=%s _staleCheckTimer=%s _flashTimers=%s _itemAdderForm=%s",
-  _mtObjType(_maTabTimer), _mtObjType(_evtLoaderTimer), _mtObjType(_staleCheckTimer), _mtObjType(_flashTimers), _mtObjType(_itemAdderForm)
+  "[pre] _maTabTimer=%s _evtLoaderTimer=%s _staleCheckTimer=%s _flashTimers=%s _itemAdderForm=%s _affixInnerForm=%s",
+  _mtObjType(_maTabTimer), _mtObjType(_evtLoaderTimer), _mtObjType(_staleCheckTimer), _mtObjType(_flashTimers), _mtObjType(_itemAdderForm), _mtObjType(_affixInnerForm)
 ))
 
 -- Cleanup strategy:
@@ -118,6 +170,7 @@ _mtDiagWrite(string.format(
 --   and self-disable on next fire. Accessing .Enabled causes C-level AV.
 -- FORM: safe to destroy (we created it, not a stale system object).
 _mtDiagWrite("[cleanup] destroying stale form, nil-ing timer refs")
+_mtDestroyAffixInnerForm("ct-load")
 if _itemAdderForm then
   pcall(function() _itemAdderForm.destroy() end)
 end

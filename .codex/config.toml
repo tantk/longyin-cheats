@@ -1,0 +1,2 @@
+[mcp_servers.cheatengine]
+command = "C:/dev/cheatengine-mcp-rs/target/release/ce-mcp-rs.exe"
