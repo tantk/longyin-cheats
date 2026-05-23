@@ -177,7 +177,7 @@ def build():
     os.makedirs(DIST_DIR, exist_ok=True)
     out_path = os.path.join(DIST_DIR, "LongYinLiZhiZhuan.CT")
     subs = [f"{k}={v}" for k, v in env.items()]
-    cmd = ["ce2fs", "-i", CT_DIR, "-o", out_path] + subs
+    cmd = [sys.executable, "-m", "ce2fs", "-i", CT_DIR, "-o", out_path] + subs
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print("[build] FAILED:")

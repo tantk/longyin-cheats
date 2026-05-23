@@ -58,5 +58,10 @@ if not _processWatcherInstalled then
   _processWatcherInstalled = true
 end
 
+-- Load persisted affix preset (MT.config is ready by now)
+if MT.cheats and MT.cheats.affix and MT.cheats.affix.load then
+  pcall(MT.cheats.affix.load)
+end
+
 -- print suppressed — opens Lua Engine window which confuses users
 if MT.diag then MT.diag("[MT] Shared core loaded (v8)") end

@@ -1326,3 +1326,39 @@ end
 
 -- (allocItem, callFunc, mergeIntoInventory removed — used shellExec/createRemoteThread
 --  which is replaced by the main-thread hook commands cmd=1 through cmd=8)
+
+-- ============================================================
+-- MT.hook.invokeRuntime — il2cpp_runtime_invoke via cmd=8
+-- ============================================================
+-- Shared helper for any module that needs to call a managed IL2CPP method.
+-- thisPtr: instance pointer (this), or 0 for static methods
+-- mi: MethodInfo* (from il2cpp_class_get_method_from_name)
+-- argPtrs: table {ptr1, ptr2, ...} where each ptr points to a value buffer
+--          (for value types) or holds the object pointer (for reference types).
+-- timeout: ms (default 2000)
+-- Returns (ok, errMsg)
+function MT.hook.invokeRuntime(thisPtr, mi, argPtrs, timeout)
+  local S = MT.hook.S
+  if not S.ready or not S.cmdBuf then return false, "Not connected" end
+  timeout = timeout or 2000
+  local riAddr = getAddress("GameAssembly.il2cpp_runtime_invoke")
+  if not riAddr or riAddr == 0 then return false, "runtime_invoke not found" end
+  local cb = S.cmdBuf
+  writeQword(cb + 0x68, riAddr)
+  writeQword(cb + 0x88, thisPtr)
+  writeQword(cb + 0x90, mi)
+  writeQword(cb + 0x98, 0)  -- exception out
+  for i = 0, 4 do
+    writeQword(cb + 0xA0 + i * 8, (argPtrs and argPtrs[i + 1]) or 0)
+  end
+  writeInteger(cb + 0x04, 0)
+  writeInteger(cb, 8)
+  local elapsed = 0
+  while elapsed < timeout do
+    local st = readInteger(cb + 0x04)
+    if st == 1 then return true end
+    if st == 2 then return false, "runtime_invoke status=2" end
+    sleep(8); elapsed = elapsed + 8
+  end
+  return false, "runtime_invoke timeout"
+end

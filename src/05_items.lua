@@ -137,6 +137,11 @@ function MT.items.addEquipGenerated(genRVA, dbIndex, bossLv, qualityRate, timeou
       if not newItem or newItem == 0 then return false, "Generator returned null" end
       local itemName = MT.hook.getItemName(newItem)
       log("Generated: " .. itemName .. " at " .. toHex(newItem))
+      -- Apply affix preset if enabled (replaces random extraAddData)
+      if MT.cheats and MT.cheats.affix and MT.cheats.affix.enabled then
+        local affixOk, affixErr = MT.cheats.affix.applyTo(newItem)
+        if not affixOk then log("Affix preset failed: " .. tostring(affixErr)) end
+      end
       -- Now add to inventory via cmd=1
       local ok2, _ = MT.hook.mainThreadGetItem(newItem)
       if not ok2 then return false, "GetItem failed" end
@@ -286,4 +291,105 @@ function MT.items.addTreasure(typeIdx, rareLv, bossLv, timeout)
     elapsed = elapsed + 16
   end
   return false, "Timeout"
+end
+
+-- ============================================================
+-- MT.cheats.affix -- Predetermined random affix override
+-- ============================================================
+-- When enabled, replaces the random extraAddData (random affixes) on every
+-- equipment generated via addEquipGenerated. baseAddData (rarity-tier stats)
+-- is left untouched. Preset is in-memory only (does NOT persist across CT reloads).
+MT.cheats = MT.cheats or {}
+MT.cheats.affix = {
+  preset = {},     -- array of {statID = int, value = float}; zero-value rows are removed
+  enabled = false, -- global toggle
+}
+
+-- MI cache keyed by GA base — auto-invalidates on game restart.
+local _affixMI = {gaBase = nil, reset = nil, set = nil}
+
+local function _resolveAffixMethods()
+  local c = MT.il2cpp.init()
+  if _affixMI.gaBase == c._gaBase and _affixMI.reset and _affixMI.set then return true end
+  _affixMI.reset = nil; _affixMI.set = nil
+  local cls = c.findClass("HeroSpeAddData")
+  if not cls then return false, "HeroSpeAddData class not found" end
+  local getMeth = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+  if not getMeth or getMeth == 0 then return false, "class_get_method_from_name unavailable" end
+  local nmR = allocateMemory(16); writeString(nmR, "Reset")
+  local nmS = allocateMemory(16); writeString(nmS, "Set")
+  local r = executeCodeEx(0, nil, getMeth, cls, nmR, 0)
+  local s = executeCodeEx(0, nil, getMeth, cls, nmS, 2)
+  deAlloc(nmR); deAlloc(nmS)
+  if not r or r == 0 then return false, "Reset MI missing" end
+  if not s or s == 0 then return false, "Set MI missing" end
+  _affixMI.gaBase = c._gaBase
+  _affixMI.reset = r
+  _affixMI.set = s
+  return true
+end
+
+-- Persistence (preset only; toggle state is per-session).
+function MT.cheats.affix.save()
+  if not MT.config or not MT.config.set then return end
+  local parts = {}
+  for _, r in ipairs(MT.cheats.affix.preset) do
+    if r.statID and r.value and r.value ~= 0 then
+      parts[#parts + 1] = string.format("%d:%g", r.statID, r.value)
+    end
+  end
+  pcall(MT.config.set, "affix.preset", table.concat(parts, ","))
+end
+
+function MT.cheats.affix.load()
+  if not MT.config or not MT.config.get then return end
+  local enc = MT.config.get("affix.preset", "")
+  MT.cheats.affix.preset = {}
+  if type(enc) == "string" and enc ~= "" then
+    for pair in enc:gmatch("[^,]+") do
+      local k, v = pair:match("^(%d+):(.+)$")
+      if k and v then
+        local sid = tonumber(k); local sv = tonumber(v)
+        if sid and sv then
+          table.insert(MT.cheats.affix.preset, {statID = sid, value = sv})
+        end
+      end
+    end
+  end
+end
+
+function MT.cheats.affix.applyTo(itemPtr)
+  if not itemPtr or itemPtr == 0 then return false, "null item" end
+  local eqd = readQword(itemPtr + 0x60)
+  if not eqd or eqd == 0 then return true end  -- not equipment, silently skip
+  local extra = readQword(eqd + 0x28)
+  if not extra or extra == 0 then return false, "no extraAddData" end
+
+  local ok, err = _resolveAffixMethods()
+  if not ok then return false, err end
+
+  -- 1) Clear all existing random affixes
+  ok, err = MT.hook.invokeRuntime(extra, _affixMI.reset, nil)
+  if not ok then return false, "Reset: " .. tostring(err) end
+
+  -- 2) Write preset entries
+  if #MT.cheats.affix.preset == 0 then return true end
+  local keyBuf = allocateMemory(4)
+  local valBuf = allocateMemory(4)
+  local applied = 0
+  for _, row in ipairs(MT.cheats.affix.preset) do
+    if row.statID and row.value and row.value ~= 0 then
+      writeInteger(keyBuf, row.statID)
+      writeFloat(valBuf, row.value)
+      ok, err = MT.hook.invokeRuntime(extra, _affixMI.set, {keyBuf, valBuf})
+      if not ok then
+        deAlloc(keyBuf); deAlloc(valBuf)
+        return false, string.format("Set(%d,%.1f): %s", row.statID, row.value, tostring(err))
+      end
+      applied = applied + 1
+    end
+  end
+  deAlloc(keyBuf); deAlloc(valBuf)
+  log(string.format("Affix preset applied: %d stats", applied))
+  return true
 end

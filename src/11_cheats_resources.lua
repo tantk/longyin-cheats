@@ -2,12 +2,12 @@
 -- ============================================================
 -- MT.cheats -- Cheat Logic Functions
 -- ============================================================
-MT.cheats = {}
-MT.cheats.resources = {}
-MT.cheats.stats = {}
-MT.cheats.battle = {}
-MT.cheats.explore = {}
-MT.cheats.sect = {}
+MT.cheats = MT.cheats or {}
+MT.cheats.resources = MT.cheats.resources or {}
+MT.cheats.stats = MT.cheats.stats or {}
+MT.cheats.battle = MT.cheats.battle or {}
+MT.cheats.explore = MT.cheats.explore or {}
+MT.cheats.sect = MT.cheats.sect or {}
 
 -- ── Resources ────────────────────────────────────────────────
 

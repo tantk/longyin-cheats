@@ -4,6 +4,176 @@
 -- ============================================================
 MT.ui = {}
 
+-- ============================================================
+-- Text width estimation + clipping detection
+-- ============================================================
+-- Estimate rendered pixel width of a UTF-8 string at a given font size.
+-- Heuristic (no Canvas access in CE Lua for arbitrary controls):
+--   ASCII char ≈ fontSize × 0.55
+--   2-byte (Latin extended) ≈ fontSize × 0.70
+--   CJK (3-byte) ≈ fontSize × 1.05  -- slightly > fontSize because Delphi pads
+function MT.ui.estimateTextWidth(text, fontSize)
+  if not text or text == "" then return 0 end
+  fontSize = fontSize or 9
+  local px = 0
+  local i = 1
+  while i <= #text do
+    local b = text:byte(i)
+    if not b then break end
+    if b < 0x80 then       px = px + fontSize * 0.55; i = i + 1
+    elseif b < 0xC0 then   i = i + 1  -- malformed continuation
+    elseif b < 0xE0 then   px = px + fontSize * 0.70; i = i + 2
+    elseif b < 0xF0 then   px = px + fontSize * 1.05; i = i + 3
+    else                   px = px + fontSize * 1.05; i = i + 4
+    end
+  end
+  return math.ceil(px)
+end
+
+-- Check if a control's Caption fits in its Width.
+-- Returns: clipped (bool), neededPx, availablePx
+function MT.ui.checkClipped(ctrl, padding)
+  padding = padding or 14  -- button border/padding allowance
+  if not ctrl then return false, 0, 0 end
+  local caption = ""
+  local width = 0
+  local fontSize = 9
+  pcall(function() caption = ctrl.Caption or "" end)
+  pcall(function() width = ctrl.Width or 0 end)
+  pcall(function() fontSize = ctrl.Font.Size or 9 end)
+  if width <= 0 or caption == "" then return false, 0, width end
+  local needed = MT.ui.estimateTextWidth(caption, fontSize) + padding
+  return needed > width, needed, width
+end
+
+-- Walk a container's children and return a list of {ctrl, caption, needed, width}
+-- for ANY control whose Caption exceeds its Width. Recursive (deep=true by default).
+-- Different padding budgets per class (buttons need more for borders, labels less).
+local PADDING_BY_CLASS = {
+  TButton = 16, TLabel = 4, TPanel = 8, TGroupBox = 12, TCheckBox = 22,
+  TRadioButton = 22, TBitBtn = 18, TSpeedButton = 8, TTabSheet = 0,
+}
+function MT.ui.auditClipped(parent, deep)
+  if deep == nil then deep = true end
+  local results = {}
+  local function visit(p)
+    local count = 0
+    pcall(function() count = p.ControlCount or 0 end)
+    for i = 0, count - 1 do
+      local ch = nil
+      pcall(function() ch = p.Controls[i] end)
+      if ch then
+        local cls = ""
+        local cap = ""
+        local visible = true
+        pcall(function() cls = ch.ClassName or "" end)
+        pcall(function() cap = ch.Caption or "" end)
+        pcall(function() visible = ch.Visible end)
+        -- Only check controls with a Caption and that are visible
+        if visible and cap and cap ~= "" then
+          local padding = PADDING_BY_CLASS[cls] or 6
+          local clipped, needed, width = MT.ui.checkClipped(ch, padding)
+          if clipped then
+            table.insert(results, {ctrl = ch, caption = cap, needed = needed, width = width, klass = cls})
+          end
+        end
+        if deep then pcall(function() visit(ch) end) end
+      end
+    end
+  end
+  visit(parent)
+  return results
+end
+
+-- Stronger audit: caption-clip + parent-overflow + sibling-overlap.
+-- Returns {captionClips=[], parentOverflows=[], overlaps=[]}.
+function MT.ui.auditLayout(parent, deep)
+  if deep == nil then deep = true end
+  local out = {captionClips = {}, parentOverflows = {}, overlaps = {}}
+  local function describe(ch)
+    local cls, cap = "", ""
+    pcall(function() cls = ch.ClassName or "" end)
+    pcall(function() cap = ch.Caption or "" end)
+    return cls, cap
+  end
+  local function visit(p)
+    -- Read parent's visible content area
+    local pW = 0
+    pcall(function() pW = p.ClientWidth or p.Width or 0 end)
+    local count = 0
+    pcall(function() count = p.ControlCount or 0 end)
+    local children = {}
+    for i = 0, count - 1 do
+      local ch = nil
+      pcall(function() ch = p.Controls[i] end)
+      if ch then
+        local visible = true
+        pcall(function() visible = ch.Visible end)
+        if visible then
+          local cls, cap = describe(ch)
+          local L, T, W, H = 0, 0, 0, 0
+          pcall(function() L, T, W, H = ch.Left or 0, ch.Top or 0, ch.Width or 0, ch.Height or 0 end)
+          -- (A) caption-vs-own-width
+          if cap and cap ~= "" then
+            local padding = PADDING_BY_CLASS[cls] or 6
+            local clipped, needed, width = MT.ui.checkClipped(ch, padding)
+            if clipped then
+              table.insert(out.captionClips, {klass=cls, caption=cap, needed=needed, width=width})
+            end
+          end
+          -- (B) right edge vs parent
+          if pW > 0 and (L + W) > pW then
+            table.insert(out.parentOverflows, {klass=cls, caption=cap, right=L+W, parentW=pW, overshoot=(L+W)-pW})
+          end
+          children[#children + 1] = {ch=ch, L=L, T=T, W=W, H=H, cls=cls, cap=cap}
+          if deep then pcall(function() visit(ch) end) end
+        end
+      end
+    end
+    -- (C) pairwise overlap check among visible siblings
+    for i = 1, #children do
+      for j = i + 1, #children do
+        local a, b = children[i], children[j]
+        if (a.L < b.L + b.W) and (b.L < a.L + a.W) and
+           (a.T < b.T + b.H) and (b.T < a.T + a.H) then
+          table.insert(out.overlaps, {a={klass=a.cls, caption=a.cap, L=a.L, T=a.T, W=a.W, H=a.H},
+                                      b={klass=b.cls, caption=b.cap, L=b.L, T=b.T, W=b.W, H=b.H}})
+        end
+      end
+    end
+  end
+  visit(parent)
+  return out
+end
+
+-- Convenience: log everything via MT.diag.
+function MT.ui.diagClipped(parent, label, deep)
+  local r = MT.ui.auditLayout(parent, deep)
+  if MT.diag then
+    local tot = #r.captionClips + #r.parentOverflows + #r.overlaps
+    if tot == 0 then
+      MT.diag(string.format("[ui-audit] %s: clean (no clip / overflow / overlap)", label or "?"))
+    else
+      MT.diag(string.format("[ui-audit] %s: %d caption-clips, %d parent-overflows, %d sibling-overlaps",
+        label or "?", #r.captionClips, #r.parentOverflows, #r.overlaps))
+      for _, x in ipairs(r.captionClips) do
+        MT.diag(string.format("  CAPCLIP [%s] '%s' needs %dpx in %dpx", x.klass, x.caption, x.needed, x.width))
+      end
+      for _, x in ipairs(r.parentOverflows) do
+        MT.diag(string.format("  OVERFLOW [%s] '%s' right=%d > parent=%d (over by %d)",
+          x.klass, x.caption, x.right, x.parentW, x.overshoot))
+      end
+      for _, x in ipairs(r.overlaps) do
+        MT.diag(string.format("  OVERLAP [%s '%s'] @ %d,%d %dx%d ↔ [%s '%s'] @ %d,%d %dx%d",
+          x.a.klass, x.a.caption, x.a.L, x.a.T, x.a.W, x.a.H,
+          x.b.klass, x.b.caption, x.b.L, x.b.T, x.b.W, x.b.H))
+      end
+    end
+  end
+  return r
+end
+
+
 -- Table of thread-gated controls: each entry = {panel=, btn=, edit=nil}
 _threadGatedControls = {}
 
@@ -451,6 +621,13 @@ end
 function InlineRow:gap(px)
   self.x = self.x + (px or 20)
   return self
+end
+
+function InlineRow:makeToggle(caption, enableFn, disableFn, needsThread)
+  local width = self:_capWidth(self.x, 180)
+  local pnl, btn = MT.ui.makeToggle(self.parent, self.x, self.y, width, self.h, caption, enableFn, disableFn, needsThread)
+  self.x = self.x + width + self.spacing
+  return pnl, btn
 end
 
 -- Snap to absolute column position (relative to row origin x0)

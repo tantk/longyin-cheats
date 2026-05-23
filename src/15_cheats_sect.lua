@@ -365,3 +365,56 @@ function MT.cheats.sect.build1Day()
   end
   return string.format("%d个建筑操作剩余1天", completed)
 end
+
+-- ============================================================
+-- Special Building Limit — patches AreaBuildController.GetMaxSpeBuildingNum
+-- to return a constant value instead of game's force-level scaling (5/6/7).
+-- Method body is replaced with `mov eax, imm32; ret` (6 bytes).
+-- ============================================================
+MT.cheats.sect._speBuildOrigBytes = nil
+MT.cheats.sect._speBuildAddr = nil
+
+local function _resolveSpeBuildFunc()
+  local c = MT.il2cpp.init()
+  local cls = c.findClass("AreaBuildController")
+  if not cls then error("AreaBuildController未找到 class not found") end
+  local getMeth = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+  if not getMeth or getMeth == 0 then error("il2cpp导出缺失 class_get_method_from_name unavailable") end
+  local nm = allocateMemory(32); writeString(nm, "GetMaxSpeBuildingNum")
+  local mi = executeCodeEx(0, nil, getMeth, cls, nm, 0)
+  deAlloc(nm)
+  if not mi or mi == 0 then error("GetMaxSpeBuildingNum未找到") end
+  local funcAddr = readQword(mi)
+  if not funcAddr or funcAddr == 0 then error("函数地址为空") end
+  return funcAddr
+end
+
+function MT.cheats.sect.speBuildLimitEnable(val)
+  local limit = tonumber(val) or 99
+  if limit < 0 then limit = 0 end
+  if limit > 0x7FFFFFFF then limit = 0x7FFFFFFF end
+  local funcAddr = _resolveSpeBuildFunc()
+  if not MT.cheats.sect._speBuildOrigBytes then
+    MT.cheats.sect._speBuildOrigBytes = readBytes(funcAddr, 6, true)
+    MT.cheats.sect._speBuildAddr = funcAddr
+  end
+  -- B8 <imm32 LE> C3   →   mov eax, imm32 ; ret
+  writeBytes(funcAddr,
+    0xB8,
+    limit & 0xFF,
+    (limit >> 8) & 0xFF,
+    (limit >> 16) & 0xFF,
+    (limit >> 24) & 0xFF,
+    0xC3)
+  return string.format("特殊建筑上限 = %d", limit)
+end
+
+function MT.cheats.sect.speBuildLimitDisable()
+  local addr = MT.cheats.sect._speBuildAddr
+  local orig = MT.cheats.sect._speBuildOrigBytes
+  if not addr or not orig then return "未启用" end
+  writeBytes(addr, orig)
+  MT.cheats.sect._speBuildOrigBytes = nil
+  MT.cheats.sect._speBuildAddr = nil
+  return "已恢复原值"
+end

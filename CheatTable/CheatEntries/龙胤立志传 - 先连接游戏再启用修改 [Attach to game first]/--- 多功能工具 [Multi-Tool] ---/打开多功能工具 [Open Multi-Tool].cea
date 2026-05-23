@@ -203,6 +203,9 @@ tabItems.Caption = "物品 Items"
 local tabEvents   = pc.addTab()  -- index 4
 tabEvents.Caption = "事件 Events"
 
+local tabCity     = pc.addTab()  -- index 5
+tabCity.Caption = "城市 City"
+
 -- ============================================================
 -- GENERAL TAB — 3-column layout with all basic cheats
 -- ============================================================
@@ -388,7 +391,12 @@ do
   MT.ui.makeOneOff(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "建筑1天 Build1Day", MT.cheats.sect.build1Day, true)
   sectY = sectY + SECT_ROW_H
 
-  -- 10. Generate Hero 生成角色 — right column
+  -- 10. Special Building Limit 特殊建筑上限 (toggle — patches GetMaxSpeBuildingNum)
+  MT.ui.makeToggleInput(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "特殊建筑上限 SpeBuildLimit", 80, "99",
+    MT.cheats.sect.speBuildLimitEnable, MT.cheats.sect.speBuildLimitDisable, true)
+  sectY = sectY + SECT_ROW_H
+
+  -- 11. Generate Hero 生成角色 — right column
   local heroY = MG
   local lblHeroGen = createLabel(tabSect)
   lblHeroGen.Left = SECT_COL2; lblHeroGen.Top = heroY
@@ -1075,6 +1083,211 @@ do
     return select(2, assert(MT.items.addEquipGenerated(db.genRVA, subIdx, tonumber(edtEqLv.Text) or 5, tonumber(edtEqRare.Text) or 5)))
   end)
   L2:advanceRow()
+
+  -- ============================================================
+  -- Affix preset: when toggled ON, every generated equip replaces
+  -- its random extraAddData with these stats. baseAddData untouched.
+  -- Rows are dynamic — start with 5, "Add Row" appends more.
+  --
+  -- Scroll container: an outer TPanel viewport + a borderless TForm
+  -- reparented inside it. The TForm gives us a native vertical scrollbar.
+  -- CE Lua's wrapper silently refuses Align/AutoScroll on a TForm, so we
+  -- size the inner form manually to match the panel and drive
+  -- VertScrollBar.Range by hand on every row add. The inner form is also
+  -- a top-level TForm that won't be destroyed when its visual parent goes
+  -- away — we track it in _G._affixInnerForm and tear it down on [DISABLE]
+  -- + sweep orphans on [ENABLE].
+  -- ============================================================
+  L2:section("随机词条预设 Affix Preset (替换/Replace)")
+
+  -- Source of truth: all stats {id, display="name (id)"}
+  local _allStatItems = {}
+  do
+    local names = nil
+    pcall(function() names = MT.data.loadStatNames() end)
+    if names then
+      for i = 0, 214 do
+        if names[i] then
+          table.insert(_allStatItems, {id = i, display = string.format("%s (%d)", names[i], i)})
+        end
+      end
+    end
+  end
+
+  -- Search bar (filters the combos by substring; case-insensitive)
+  local searchRow = L2:inlineRow()
+  searchRow:label("搜索:")
+  local edtAffixSearch = createEdit(L2.parent)
+  edtAffixSearch.Left = searchRow.x; edtAffixSearch.Top = searchRow.y
+  edtAffixSearch.Width = 220; edtAffixSearch.Height = searchRow.h - 4
+  L2:advanceRow()
+
+  -- Outer viewport panel (visible ~8 rows)
+  local _affixRowH = 28
+  local _affixViewRows = 8
+  local _affixPanelPad = 8
+  local affixScroll = createPanel(L2.parent)
+  affixScroll.Left = L2.x0
+  affixScroll.Top = L2.y
+  affixScroll.Width = L2.btnW + 140
+  affixScroll.Height = _affixPanelPad + _affixViewRows * _affixRowH
+  affixScroll.BevelOuter = 1
+  L2.y = L2.y + affixScroll.Height + 8
+
+  -- Kill any leftover inner forms from a previous session — both the
+  -- explicitly tracked one and any orphan UDF_* forms still hanging around.
+  if _G._affixInnerForm then
+    pcall(function() _G._affixInnerForm:destroy() end)
+    _G._affixInnerForm = nil
+  end
+  pcall(function()
+    for i = getFormCount() - 1, 0, -1 do
+      local f = getForm(i)
+      if f and f.Caption and f.Caption:find("^UDF_") and type(f.Parent) == "nil" then
+        pcall(function() f:destroy() end)
+      end
+    end
+  end)
+
+  local affixInner = createForm(false)
+  pcall(function() affixInner.BorderStyle = 0 end)
+  pcall(function() affixInner.Parent = affixScroll end)
+  -- IMPORTANT: do NOT use Align — CE Lua's wrapper silently rejects it,
+  -- which leaves the form at its default 320×240 and pushes the scrollbar
+  -- outside the panel's viewable area. Size manually instead.
+  pcall(function() affixInner.Left = 0 end)
+  pcall(function() affixInner.Top = 0 end)
+  pcall(function() affixInner.Width = affixScroll.Width end)
+  pcall(function() affixInner.Height = affixScroll.Height end)
+  pcall(function() affixInner.VertScrollBar.Tracking = true end)
+  pcall(function() affixInner.VertScrollBar.Increment = _affixRowH end)
+  pcall(function() affixInner.Visible = true end)
+  _G._affixInnerForm = affixInner  -- so [DISABLE] can destroy it
+
+  local LA = MT.ui.lay(affixInner, {x = 6, y = 4, rowH = _affixRowH, btnH = 24})
+
+  local function _updateAffixScrollRange()
+    pcall(function() affixInner.VertScrollBar.Range = LA.y + 8 end)
+  end
+
+  local _affixRows = {}
+  -- Reentrancy guard: when _rebuildCombo mutates Items/ItemIndex it can trigger
+  -- the combo's OnChange handler. We must not let _syncAffixPreset run on a
+  -- half-built _idMap (it would read garbage and wipe cmb._statID).
+  local _suppressAffixSync = false
+
+  local function _rebuildCombo(cmb, filter)
+    -- CE wraps the combo as a Delphi component; arbitrary properties get
+    -- coerced to strings on assign, so coerce back to number for comparison.
+    local prevStatID = tonumber(cmb._statID)
+    _suppressAffixSync = true
+    cmb.Items.beginUpdate()
+    cmb.Items.clear()
+    cmb._idMap = {-1}
+    cmb.Items.add("(无 None)")
+    local newIdx = 0
+    for _, item in ipairs(_allStatItems) do
+      local matches = (filter == "" or item.display:lower():find(filter, 1, true))
+      local isSelected = (prevStatID and item.id == prevStatID)
+      if matches or isSelected then
+        cmb.Items.add(item.display)
+        table.insert(cmb._idMap, item.id)
+        if isSelected then newIdx = #cmb._idMap - 1 end
+      end
+    end
+    cmb.Items.endUpdate()
+    cmb.ItemIndex = newIdx
+    _suppressAffixSync = false
+  end
+
+  local function _syncAffixPreset()
+    if _suppressAffixSync then return end
+    MT.cheats.affix.preset = {}
+    for _, p in ipairs(_affixRows) do
+      if p.cmb and p.edt and p.cmb._idMap then
+        local idx = p.cmb.ItemIndex + 1
+        local sid = p.cmb._idMap[idx]
+        local val = tonumber(p.edt.Text) or 0
+        if sid and sid >= 0 then
+          p.cmb._statID = sid
+          if val ~= 0 then
+            table.insert(MT.cheats.affix.preset, {statID = sid, value = val})
+          end
+        else
+          p.cmb._statID = nil
+        end
+      end
+    end
+    if MT.cheats.affix.save then pcall(MT.cheats.affix.save) end
+  end
+
+  local function _applySearch()
+    local q = (edtAffixSearch.Text or ""):lower()
+    for _, p in ipairs(_affixRows) do
+      _rebuildCombo(p.cmb, q)
+    end
+  end
+
+  local function _addAffixRow()
+    local n = #_affixRows + 1
+    local row = LA:inlineRow()
+    row:label(string.format("%d:", n))
+    local cmb = row:combo({"(无 None)"}, 240)
+    cmb._statID = nil
+    cmb.ItemIndex = 0
+    row:label("值 Value:")
+    local edt = row:edit("0", 70)
+    table.insert(_affixRows, {cmb = cmb, edt = edt})
+    _rebuildCombo(cmb, (edtAffixSearch.Text or ""):lower())
+    pcall(function() cmb.OnChange = _syncAffixPreset end)
+    pcall(function() edt.OnChange = _syncAffixPreset end)
+    LA:advanceRow()
+    _updateAffixScrollRange()
+  end
+
+  pcall(function() edtAffixSearch.OnChange = _applySearch end)
+
+  -- Restore from saved preset. Ensure at least 5 rows.
+  local saved = (MT.cheats and MT.cheats.affix and MT.cheats.affix.preset) or {}
+  local numRows = math.max(5, #saved)
+  for _ = 1, numRows do _addAffixRow() end
+  for i, r in ipairs(saved) do
+    local p = _affixRows[i]
+    if p and r.statID and r.value then
+      p.cmb._statID = r.statID
+      _rebuildCombo(p.cmb, "")
+      p.edt.Text = tostring(r.value)
+    end
+  end
+
+  -- Buttons OUTSIDE the scroll viewport (always visible)
+  r = L2:inlineRow()
+  local chkApply = createCheckBox(L2.parent)
+  chkApply.Left = L2.x0; chkApply.Top = L2.y + 6
+  chkApply.Width = 200
+  chkApply.Caption = "应用预设 Apply Preset"
+  chkApply.OnChange = function()
+    if chkApply.Checked then
+      _syncAffixPreset()
+      MT.cheats.affix.enabled = true
+    else
+      MT.cheats.affix.enabled = false
+    end
+  end
+  r.x = r.x + chkApply.Width + r.spacing
+  r:button("清空 Clear", 100, function()
+    for _, p in ipairs(_affixRows) do
+      p.cmb._statID = nil
+      p.cmb.ItemIndex = 0
+      p.edt.Text = "0"
+    end
+    MT.cheats.affix.preset = {}
+    if MT.cheats.affix.save then pcall(MT.cheats.affix.save) end
+  end)
+  r:button("+ 增加行 Add Row", 130, function()
+    _addAffixRow()
+  end)
+  L2:advanceRow()
 end
 
 -- ============================================================
@@ -1527,6 +1740,286 @@ do
 end
 
 -- ============================================================
+-- CITY TAB -- top toolbar (controls) + grid below (full width)
+-- ============================================================
+do
+  -- ───── Row 1: city dropdown + refresh + selected info ─────
+  local r1Y = MG
+  local BTN_H = 30
+  local lblArea = createLabel(tabCity)
+  lblArea.Left = MG; lblArea.Top = r1Y + 7
+  lblArea.Caption = "城市"
+
+  local cmbArea = createComboBox(tabCity)
+  cmbArea.Left = MG + 50; cmbArea.Top = r1Y + 3; cmbArea.Width = 240
+  cmbArea.Style = "csDropDownList"
+
+  local btnRefresh = createButton(tabCity)
+  btnRefresh.Left = MG + 300; btnRefresh.Top = r1Y; btnRefresh.Width = 90; btnRefresh.Height = BTN_H
+  btnRefresh.Caption = "刷新"
+
+  local lblSel = createLabel(tabCity)
+  lblSel.Left = MG + 410; lblSel.Top = r1Y + 7
+  lblSel.Caption = "(未选择)"
+
+  -- ───── Row 2: building picker + level + apply + delete-building ─────
+  local r2Y = r1Y + BTN_H + 8
+  local lblPick = createLabel(tabCity)
+  lblPick.Left = MG; lblPick.Top = r2Y + 7
+  lblPick.Caption = "新建筑"
+  local cmbPick = createComboBox(tabCity)
+  cmbPick.Left = MG + 65; cmbPick.Top = r2Y + 3; cmbPick.Width = 220
+  cmbPick.Style = "csDropDownList"
+
+  local lblLv = createLabel(tabCity)
+  lblLv.Left = MG + 295; lblLv.Top = r2Y + 7
+  lblLv.Caption = "等级"
+  local edtLv = createEdit(tabCity)
+  edtLv.Left = MG + 335; edtLv.Top = r2Y + 3; edtLv.Width = 45
+  edtLv.Text = "1"
+
+  local btnApply = createButton(tabCity)
+  btnApply.Left = MG + 390; btnApply.Top = r2Y; btnApply.Width = 90; btnApply.Height = BTN_H
+  btnApply.Caption = "建建筑"
+
+  local btnDelBldg = createButton(tabCity)
+  btnDelBldg.Left = MG + 490; btnDelBldg.Top = r2Y; btnDelBldg.Width = 90; btnDelBldg.Height = BTN_H
+  btnDelBldg.Caption = "删建筑"
+
+  -- ───── Row 3: road level + upgrade all roads ─────
+  -- (Add/Delete-road removed: allocating new AreaRoadData objects on tiles can
+  --  corrupt unusual towns and wipe the whole city. Only safe to modify
+  --  the level of pre-existing roads, which is what upgradeAllRoads does.)
+  local r3Y = r2Y + BTN_H + 6
+  local lblRoad = createLabel(tabCity)
+  lblRoad.Left = MG; lblRoad.Top = r3Y + 7
+  lblRoad.Caption = "道路等级"
+  local edtRoadLv = createEdit(tabCity)
+  edtRoadLv.Left = MG + 75; edtRoadLv.Top = r3Y + 3; edtRoadLv.Width = 45
+  edtRoadLv.Text = "3"
+
+  local btnRoad = createButton(tabCity)
+  btnRoad.Left = MG + 130; btnRoad.Top = r3Y; btnRoad.Width = 160; btnRoad.Height = BTN_H
+  btnRoad.Caption = "升级全部道路"
+
+  -- Per-tile road level edit: enabled only when the selected tile is a road.
+  local btnSetRoadLv = createButton(tabCity)
+  btnSetRoadLv.Left = MG + 300; btnSetRoadLv.Top = r3Y; btnSetRoadLv.Width = 180; btnSetRoadLv.Height = BTN_H
+  btnSetRoadLv.Caption = "改本格道路等级"
+  btnSetRoadLv.Enabled = false
+
+  -- ───── Row 4+: tile grid (created on demand) ─────
+  local GRID_Y = r3Y + BTN_H + 10
+
+  -- ───── Status bar at bottom (position calculated at refresh time using ClientHeight) ─────
+  local lblStatus = createLabel(tabCity)
+  lblStatus.Left = MG
+  pcall(function() lblStatus.Top = (tabCity.ClientHeight or 600) - 24 end)
+  lblStatus.Caption = ""
+  lblStatus.Font.Color = 0x808080
+
+  -- State
+  local _areaPtrs = {}        -- list of area pointers, indexed by cmbArea.ItemIndex
+  local _buildingList = {}    -- {id, name} from getAllBuildings()
+  local _buildingIDFromIdx = {}  -- maps cmbPick.ItemIndex -> buildingID
+  local _tileButtons = {}     -- list of tile buttons currently shown
+  local _selectedTile = nil
+  local _selectedBtn = nil
+  local _selectedArea = nil
+
+  local function _populateBuildingPicker()
+    cmbPick.Items.clear()
+    _buildingIDFromIdx = {}
+    pcall(function() _buildingList = MT.cheats.city.getAllBuildings() or {} end)
+    for _, b in ipairs(_buildingList) do
+      cmbPick.Items.add(string.format("%d %s", b.id, b.name))
+      _buildingIDFromIdx[#_buildingIDFromIdx + 1] = b.id
+    end
+    if cmbPick.Items.Count > 0 then cmbPick.ItemIndex = 0 end
+  end
+
+  local function _clearTileButtons()
+    for _, b in ipairs(_tileButtons) do
+      pcall(function() b.destroy() end)
+    end
+    _tileButtons = {}
+    _selectedTile = nil
+    _selectedBtn = nil
+    pcall(function() btnSetRoadLv.Enabled = false end)
+    lblSel.Caption = "(未选择 No tile selected)"
+  end
+
+  local function _bldgName(id)
+    for _, b in ipairs(_buildingList) do
+      if b.id == id then return b.name end
+    end
+    return tostring(id)
+  end
+
+  local function _refreshGrid()
+    _clearTileButtons()
+    local idx = cmbArea.ItemIndex
+    if idx < 0 then return end
+    local area = _areaPtrs[idx + 1]
+    if not area then return end
+    _selectedArea = area
+    local grid = nil
+    local ok, err = pcall(function() grid = MT.cheats.city.getAreaGrid(area) end)
+    if not ok or not grid then lblStatus.Caption = "读取失败: " .. tostring(err); return end
+
+    local GX, GY = MG, GRID_Y
+    -- Auto-fit cells to BOTH width and height to fill the available tab area
+    local tabW, tabH = 1000, 600
+    pcall(function() tabW = tabCity.ClientWidth or tabCity.Width or 1000 end)
+    pcall(function() tabH = tabCity.ClientHeight or tabCity.Height or 600 end)
+    local availW = tabW - MG * 2
+    local availH = tabH - GRID_Y - 36   -- leave room for status bar
+    local PAD = 1
+    -- Cell width fits all columns; cell height fits all rows; pick the SMALLER constraint
+    local cwByW = math.floor((availW - (grid.width - 1) * PAD) / math.max(1, grid.width))
+    local chByH = math.floor((availH - (grid.height - 1) * PAD) / math.max(1, grid.height))
+    -- Aspect: prefer slightly wider than tall (1.4:1) for readability
+    local CW = math.min(cwByW, math.floor(chByH * 1.6))
+    local CH = math.min(chByH, math.floor(CW / 1.6))
+    if CW < 40 then CW = 40 end
+    if CH < 18 then CH = 18 end
+    -- Font size scales with cell size (use the smaller dimension as proxy)
+    local fontSize
+    local minDim = math.min(CW, CH * 2)
+    if     minDim >= 100 then fontSize = 12
+    elseif minDim >= 80  then fontSize = 11
+    elseif minDim >= 64  then fontSize = 10
+    elseif minDim >= 50  then fontSize = 9
+    else                      fontSize = 8 end
+    for _, t in ipairs(grid.tiles) do
+      local b = createButton(tabCity)
+      -- Flip Y: game's row 0 is at the bottom of the map, render row 0 at the bottom of UI
+      local visualRow = (grid.height - 1) - t.row
+      b.Left = GX + t.col * (CW + PAD)
+      b.Top  = GY + visualRow * (CH + PAD)
+      b.Width = CW; b.Height = CH
+      local cap, isEmpty, isRoad
+      if t.buildingID == -1 then
+        if t.protected then cap = "·"; isEmpty = false
+        elseif t.isRoad then cap = "路 " .. t.roadLv; isEmpty = false; isRoad = true
+        else cap = ""; isEmpty = true   -- truly empty
+        end
+      else
+        local nm = _bldgName(t.buildingID)
+        -- Truncate Chinese names to fit cell (each Chinese char = 3 UTF-8 bytes)
+        -- Budget = roughly (CW / fontSize) Chinese chars × 3 bytes
+        local maxChars = math.max(2, math.floor(CW / fontSize))
+        local maxBytes = maxChars * 3
+        if #nm > maxBytes then nm = nm:sub(1, maxBytes) end
+        cap = (t.buildingLv > 0) and (nm .. " " .. t.buildingLv) or nm
+        isEmpty = false
+      end
+      b.Caption = cap
+      b.Font.Size = fontSize
+      if isEmpty then pcall(function() b.Font.Color = 0xC0C0C0 end) end
+      if isRoad then pcall(function() b.Font.Color = 0x808080 end) end
+      local tilePtr = t.ptr
+      local row, col = t.row, t.col
+      local protected = t.protected
+      local bId, bLv = t.buildingID, t.buildingLv
+      local isRoadT, roadLvT = t.isRoad, t.roadLv
+      b.OnClick = function()
+        if _selectedBtn then pcall(function() _selectedBtn.Color = 0xF0F0F0 end) end
+        _selectedBtn = b
+        _selectedTile = tilePtr
+        pcall(function() b.Color = 0x4488FF end)
+        -- Enable per-tile road level edit only when this tile actually has a road,
+        -- and pre-fill the level field with the current road's level for convenience.
+        pcall(function() btnSetRoadLv.Enabled = isRoadT and true or false end)
+        if isRoadT and roadLvT and roadLvT > 0 then
+          pcall(function() edtRoadLv.Text = tostring(roadLvT) end)
+        end
+        local parts = {}
+        if bId ~= -1 then
+          local nm = _bldgName(bId)
+          parts[#parts + 1] = string.format("建筑: %s lv%d", nm, bLv)
+        end
+        if isRoadT then
+          parts[#parts + 1] = string.format("道路 lv%d", roadLvT)
+        end
+        if protected then parts[#parts + 1] = "[保护]" end
+        if #parts == 0 then parts[1] = "(空)" end
+        lblSel.Caption = string.format("已选: r%d c%d | %s", row, col, table.concat(parts, ", "))
+      end
+      table.insert(_tileButtons, b)
+    end
+    lblStatus.Caption = string.format("%s — %d×%d tiles", MT.cheats.city.getAreaName(area), grid.width, grid.height)
+  end
+
+  local function _refreshAreas()
+    cmbArea.Items.clear()
+    _areaPtrs = {}
+    local areas = {}
+    local ok, err = pcall(function() areas = MT.cheats.city.getPlayerAreas() or {} end)
+    if not ok then lblStatus.Caption = "Error: " .. tostring(err); return end
+    for _, a in ipairs(areas) do
+      cmbArea.Items.add(MT.cheats.city.getAreaName(a))
+      table.insert(_areaPtrs, a)
+    end
+    if cmbArea.Items.Count > 0 then
+      cmbArea.ItemIndex = 0
+      _refreshGrid()
+    else
+      lblStatus.Caption = "未拥有任何区域 No owned areas (load save?)"
+    end
+  end
+
+  cmbArea.OnChange = function() _refreshGrid() end
+  btnRefresh.OnClick = function() _populateBuildingPicker(); _refreshAreas() end
+
+  btnApply.OnClick = function()
+    if not _selectedArea or not _selectedTile then
+      lblStatus.Caption = "请先选择格子 Select a tile first"; return
+    end
+    local pickIdx = cmbPick.ItemIndex
+    if pickIdx < 0 then lblStatus.Caption = "请选建筑 Pick a building"; return end
+    local newID = _buildingIDFromIdx[pickIdx + 1]
+    if not newID then lblStatus.Caption = "Invalid pick"; return end
+    local newLv = tonumber(edtLv.Text) or 1
+    local ok, msg = MT.cheats.city.swapTileBuilding(_selectedArea, _selectedTile, newID, newLv)
+    if not ok then lblStatus.Caption = "失败 Failed: " .. tostring(msg); return end
+    lblStatus.Caption = string.format("已建造 Built: %s lv%d", _bldgName(newID), newLv)
+    _refreshGrid()
+  end
+
+  btnRoad.OnClick = function()
+    if not _selectedArea then lblStatus.Caption = "请先选择城市"; return end
+    local lv = tonumber(edtRoadLv.Text) or 3
+    local ok, msg = MT.cheats.city.upgradeAllRoads(_selectedArea, lv)
+    if not ok then lblStatus.Caption = "失败: " .. tostring(msg); return end
+    lblStatus.Caption = msg
+    _refreshGrid()
+  end
+
+  btnSetRoadLv.OnClick = function()
+    if not _selectedArea or not _selectedTile then
+      lblStatus.Caption = "请先选择道路格子"; return
+    end
+    local lv = tonumber(edtRoadLv.Text) or 1
+    local ok, msg = MT.cheats.city.setRoadLevel(_selectedArea, _selectedTile, lv)
+    if not ok then lblStatus.Caption = "失败: " .. tostring(msg); return end
+    lblStatus.Caption = msg
+    _refreshGrid()
+  end
+
+  btnDelBldg.OnClick = function()
+    if not _selectedArea or not _selectedTile then lblStatus.Caption = "请先选择格子"; return end
+    local ok, msg = MT.cheats.city.deleteBuilding(_selectedArea, _selectedTile)
+    if not ok then lblStatus.Caption = "失败: " .. tostring(msg); return end
+    lblStatus.Caption = msg
+    _refreshGrid()
+  end
+
+  -- Initial populate (lazy — only when game is attached)
+  -- The user clicks Refresh after connecting to game.
+end
+
+-- ============================================================
 -- STATUS BAR (bottom of form)
 -- ============================================================
 
@@ -1735,6 +2228,13 @@ if syntaxcheck then return end
 
 pcall(function()
   -- 1. Destroy GUI
+  -- Inner affix scroll form is a top-level TForm (created via createForm and
+  -- reparented into the panel). VCL won't destroy it when the panel goes away,
+  -- so we have to kill it explicitly or it becomes a zombie.
+  if _G._affixInnerForm then
+    pcall(function() _G._affixInnerForm:destroy() end)
+    _G._affixInnerForm = nil
+  end
   if _itemAdderForm then _itemAdderForm.destroy(); _itemAdderForm = nil end
   _mtStatusLbl = nil
   _threadGatedControls = {}

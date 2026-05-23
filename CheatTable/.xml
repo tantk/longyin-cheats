@@ -1784,6 +1784,42 @@ end
 -- (allocItem, callFunc, mergeIntoInventory removed — used shellExec/createRemoteThread
 --  which is replaced by the main-thread hook commands cmd=1 through cmd=8)
 
+-- ============================================================
+-- MT.hook.invokeRuntime — il2cpp_runtime_invoke via cmd=8
+-- ============================================================
+-- Shared helper for any module that needs to call a managed IL2CPP method.
+-- thisPtr: instance pointer (this), or 0 for static methods
+-- mi: MethodInfo* (from il2cpp_class_get_method_from_name)
+-- argPtrs: table {ptr1, ptr2, ...} where each ptr points to a value buffer
+--          (for value types) or holds the object pointer (for reference types).
+-- timeout: ms (default 2000)
+-- Returns (ok, errMsg)
+function MT.hook.invokeRuntime(thisPtr, mi, argPtrs, timeout)
+  local S = MT.hook.S
+  if not S.ready or not S.cmdBuf then return false, "Not connected" end
+  timeout = timeout or 2000
+  local riAddr = getAddress("GameAssembly.il2cpp_runtime_invoke")
+  if not riAddr or riAddr == 0 then return false, "runtime_invoke not found" end
+  local cb = S.cmdBuf
+  writeQword(cb + 0x68, riAddr)
+  writeQword(cb + 0x88, thisPtr)
+  writeQword(cb + 0x90, mi)
+  writeQword(cb + 0x98, 0)  -- exception out
+  for i = 0, 4 do
+    writeQword(cb + 0xA0 + i * 8, (argPtrs and argPtrs[i + 1]) or 0)
+  end
+  writeInteger(cb + 0x04, 0)
+  writeInteger(cb, 8)
+  local elapsed = 0
+  while elapsed &lt; timeout do
+    local st = readInteger(cb + 0x04)
+    if st == 1 then return true end
+    if st == 2 then return false, "runtime_invoke status=2" end
+    sleep(8); elapsed = elapsed + 8
+  end
+  return false, "runtime_invoke timeout"
+end
+
 -- src/05_items.lua — Item creation functions (MT.items)
 -- ============================================================
 -- MT.items -- addBook, addMaterial, addMedFood, addHorse,
@@ -1923,6 +1959,11 @@ function MT.items.addEquipGenerated(genRVA, dbIndex, bossLv, qualityRate, timeou
       if not newItem or newItem == 0 then return false, "Generator returned null" end
       local itemName = MT.hook.getItemName(newItem)
       log("Generated: " .. itemName .. " at " .. toHex(newItem))
+      -- Apply affix preset if enabled (replaces random extraAddData)
+      if MT.cheats and MT.cheats.affix and MT.cheats.affix.enabled then
+        local affixOk, affixErr = MT.cheats.affix.applyTo(newItem)
+        if not affixOk then log("Affix preset failed: " .. tostring(affixErr)) end
+      end
       -- Now add to inventory via cmd=1
       local ok2, _ = MT.hook.mainThreadGetItem(newItem)
       if not ok2 then return false, "GetItem failed" end
@@ -2072,6 +2113,107 @@ function MT.items.addTreasure(typeIdx, rareLv, bossLv, timeout)
     elapsed = elapsed + 16
   end
   return false, "Timeout"
+end
+
+-- ============================================================
+-- MT.cheats.affix -- Predetermined random affix override
+-- ============================================================
+-- When enabled, replaces the random extraAddData (random affixes) on every
+-- equipment generated via addEquipGenerated. baseAddData (rarity-tier stats)
+-- is left untouched. Preset is in-memory only (does NOT persist across CT reloads).
+MT.cheats = MT.cheats or {}
+MT.cheats.affix = {
+  preset = {},     -- array of {statID = int, value = float}; zero-value rows are removed
+  enabled = false, -- global toggle
+}
+
+-- MI cache keyed by GA base — auto-invalidates on game restart.
+local _affixMI = {gaBase = nil, reset = nil, set = nil}
+
+local function _resolveAffixMethods()
+  local c = MT.il2cpp.init()
+  if _affixMI.gaBase == c._gaBase and _affixMI.reset and _affixMI.set then return true end
+  _affixMI.reset = nil; _affixMI.set = nil
+  local cls = c.findClass("HeroSpeAddData")
+  if not cls then return false, "HeroSpeAddData class not found" end
+  local getMeth = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+  if not getMeth or getMeth == 0 then return false, "class_get_method_from_name unavailable" end
+  local nmR = allocateMemory(16); writeString(nmR, "Reset")
+  local nmS = allocateMemory(16); writeString(nmS, "Set")
+  local r = executeCodeEx(0, nil, getMeth, cls, nmR, 0)
+  local s = executeCodeEx(0, nil, getMeth, cls, nmS, 2)
+  deAlloc(nmR); deAlloc(nmS)
+  if not r or r == 0 then return false, "Reset MI missing" end
+  if not s or s == 0 then return false, "Set MI missing" end
+  _affixMI.gaBase = c._gaBase
+  _affixMI.reset = r
+  _affixMI.set = s
+  return true
+end
+
+-- Persistence (preset only; toggle state is per-session).
+function MT.cheats.affix.save()
+  if not MT.config or not MT.config.set then return end
+  local parts = {}
+  for _, r in ipairs(MT.cheats.affix.preset) do
+    if r.statID and r.value and r.value ~= 0 then
+      parts[#parts + 1] = string.format("%d:%g", r.statID, r.value)
+    end
+  end
+  pcall(MT.config.set, "affix.preset", table.concat(parts, ","))
+end
+
+function MT.cheats.affix.load()
+  if not MT.config or not MT.config.get then return end
+  local enc = MT.config.get("affix.preset", "")
+  MT.cheats.affix.preset = {}
+  if type(enc) == "string" and enc ~= "" then
+    for pair in enc:gmatch("[^,]+") do
+      local k, v = pair:match("^(%d+):(.+)$")
+      if k and v then
+        local sid = tonumber(k); local sv = tonumber(v)
+        if sid and sv then
+          table.insert(MT.cheats.affix.preset, {statID = sid, value = sv})
+        end
+      end
+    end
+  end
+end
+
+function MT.cheats.affix.applyTo(itemPtr)
+  if not itemPtr or itemPtr == 0 then return false, "null item" end
+  local eqd = readQword(itemPtr + 0x60)
+  if not eqd or eqd == 0 then return true end  -- not equipment, silently skip
+  local extra = readQword(eqd + 0x28)
+  if not extra or extra == 0 then return false, "no extraAddData" end
+
+  local ok, err = _resolveAffixMethods()
+  if not ok then return false, err end
+
+  -- 1) Clear all existing random affixes
+  ok, err = MT.hook.invokeRuntime(extra, _affixMI.reset, nil)
+  if not ok then return false, "Reset: " .. tostring(err) end
+
+  -- 2) Write preset entries
+  if #MT.cheats.affix.preset == 0 then return true end
+  local keyBuf = allocateMemory(4)
+  local valBuf = allocateMemory(4)
+  local applied = 0
+  for _, row in ipairs(MT.cheats.affix.preset) do
+    if row.statID and row.value and row.value ~= 0 then
+      writeInteger(keyBuf, row.statID)
+      writeFloat(valBuf, row.value)
+      ok, err = MT.hook.invokeRuntime(extra, _affixMI.set, {keyBuf, valBuf})
+      if not ok then
+        deAlloc(keyBuf); deAlloc(valBuf)
+        return false, string.format("Set(%d,%.1f): %s", row.statID, row.value, tostring(err))
+      end
+      applied = applied + 1
+    end
+  end
+  deAlloc(keyBuf); deAlloc(valBuf)
+  log(string.format("Affix preset applied: %d stats", applied))
+  return true
 end
 
 -- src/06_heroes.lua — Hero generation functions (MT.heroes)
@@ -2274,6 +2416,176 @@ end
 -- MT.ui -- UI helper functions
 -- ============================================================
 MT.ui = {}
+
+-- ============================================================
+-- Text width estimation + clipping detection
+-- ============================================================
+-- Estimate rendered pixel width of a UTF-8 string at a given font size.
+-- Heuristic (no Canvas access in CE Lua for arbitrary controls):
+--   ASCII char ≈ fontSize × 0.55
+--   2-byte (Latin extended) ≈ fontSize × 0.70
+--   CJK (3-byte) ≈ fontSize × 1.05  -- slightly &gt; fontSize because Delphi pads
+function MT.ui.estimateTextWidth(text, fontSize)
+  if not text or text == "" then return 0 end
+  fontSize = fontSize or 9
+  local px = 0
+  local i = 1
+  while i &lt;= #text do
+    local b = text:byte(i)
+    if not b then break end
+    if b &lt; 0x80 then       px = px + fontSize * 0.55; i = i + 1
+    elseif b &lt; 0xC0 then   i = i + 1  -- malformed continuation
+    elseif b &lt; 0xE0 then   px = px + fontSize * 0.70; i = i + 2
+    elseif b &lt; 0xF0 then   px = px + fontSize * 1.05; i = i + 3
+    else                   px = px + fontSize * 1.05; i = i + 4
+    end
+  end
+  return math.ceil(px)
+end
+
+-- Check if a control's Caption fits in its Width.
+-- Returns: clipped (bool), neededPx, availablePx
+function MT.ui.checkClipped(ctrl, padding)
+  padding = padding or 14  -- button border/padding allowance
+  if not ctrl then return false, 0, 0 end
+  local caption = ""
+  local width = 0
+  local fontSize = 9
+  pcall(function() caption = ctrl.Caption or "" end)
+  pcall(function() width = ctrl.Width or 0 end)
+  pcall(function() fontSize = ctrl.Font.Size or 9 end)
+  if width &lt;= 0 or caption == "" then return false, 0, width end
+  local needed = MT.ui.estimateTextWidth(caption, fontSize) + padding
+  return needed &gt; width, needed, width
+end
+
+-- Walk a container's children and return a list of {ctrl, caption, needed, width}
+-- for ANY control whose Caption exceeds its Width. Recursive (deep=true by default).
+-- Different padding budgets per class (buttons need more for borders, labels less).
+local PADDING_BY_CLASS = {
+  TButton = 16, TLabel = 4, TPanel = 8, TGroupBox = 12, TCheckBox = 22,
+  TRadioButton = 22, TBitBtn = 18, TSpeedButton = 8, TTabSheet = 0,
+}
+function MT.ui.auditClipped(parent, deep)
+  if deep == nil then deep = true end
+  local results = {}
+  local function visit(p)
+    local count = 0
+    pcall(function() count = p.ControlCount or 0 end)
+    for i = 0, count - 1 do
+      local ch = nil
+      pcall(function() ch = p.Controls[i] end)
+      if ch then
+        local cls = ""
+        local cap = ""
+        local visible = true
+        pcall(function() cls = ch.ClassName or "" end)
+        pcall(function() cap = ch.Caption or "" end)
+        pcall(function() visible = ch.Visible end)
+        -- Only check controls with a Caption and that are visible
+        if visible and cap and cap ~= "" then
+          local padding = PADDING_BY_CLASS[cls] or 6
+          local clipped, needed, width = MT.ui.checkClipped(ch, padding)
+          if clipped then
+            table.insert(results, {ctrl = ch, caption = cap, needed = needed, width = width, klass = cls})
+          end
+        end
+        if deep then pcall(function() visit(ch) end) end
+      end
+    end
+  end
+  visit(parent)
+  return results
+end
+
+-- Stronger audit: caption-clip + parent-overflow + sibling-overlap.
+-- Returns {captionClips=[], parentOverflows=[], overlaps=[]}.
+function MT.ui.auditLayout(parent, deep)
+  if deep == nil then deep = true end
+  local out = {captionClips = {}, parentOverflows = {}, overlaps = {}}
+  local function describe(ch)
+    local cls, cap = "", ""
+    pcall(function() cls = ch.ClassName or "" end)
+    pcall(function() cap = ch.Caption or "" end)
+    return cls, cap
+  end
+  local function visit(p)
+    -- Read parent's visible content area
+    local pW = 0
+    pcall(function() pW = p.ClientWidth or p.Width or 0 end)
+    local count = 0
+    pcall(function() count = p.ControlCount or 0 end)
+    local children = {}
+    for i = 0, count - 1 do
+      local ch = nil
+      pcall(function() ch = p.Controls[i] end)
+      if ch then
+        local visible = true
+        pcall(function() visible = ch.Visible end)
+        if visible then
+          local cls, cap = describe(ch)
+          local L, T, W, H = 0, 0, 0, 0
+          pcall(function() L, T, W, H = ch.Left or 0, ch.Top or 0, ch.Width or 0, ch.Height or 0 end)
+          -- (A) caption-vs-own-width
+          if cap and cap ~= "" then
+            local padding = PADDING_BY_CLASS[cls] or 6
+            local clipped, needed, width = MT.ui.checkClipped(ch, padding)
+            if clipped then
+              table.insert(out.captionClips, {klass=cls, caption=cap, needed=needed, width=width})
+            end
+          end
+          -- (B) right edge vs parent
+          if pW &gt; 0 and (L + W) &gt; pW then
+            table.insert(out.parentOverflows, {klass=cls, caption=cap, right=L+W, parentW=pW, overshoot=(L+W)-pW})
+          end
+          children[#children + 1] = {ch=ch, L=L, T=T, W=W, H=H, cls=cls, cap=cap}
+          if deep then pcall(function() visit(ch) end) end
+        end
+      end
+    end
+    -- (C) pairwise overlap check among visible siblings
+    for i = 1, #children do
+      for j = i + 1, #children do
+        local a, b = children[i], children[j]
+        if (a.L &lt; b.L + b.W) and (b.L &lt; a.L + a.W) and
+           (a.T &lt; b.T + b.H) and (b.T &lt; a.T + a.H) then
+          table.insert(out.overlaps, {a={klass=a.cls, caption=a.cap, L=a.L, T=a.T, W=a.W, H=a.H},
+                                      b={klass=b.cls, caption=b.cap, L=b.L, T=b.T, W=b.W, H=b.H}})
+        end
+      end
+    end
+  end
+  visit(parent)
+  return out
+end
+
+-- Convenience: log everything via MT.diag.
+function MT.ui.diagClipped(parent, label, deep)
+  local r = MT.ui.auditLayout(parent, deep)
+  if MT.diag then
+    local tot = #r.captionClips + #r.parentOverflows + #r.overlaps
+    if tot == 0 then
+      MT.diag(string.format("[ui-audit] %s: clean (no clip / overflow / overlap)", label or "?"))
+    else
+      MT.diag(string.format("[ui-audit] %s: %d caption-clips, %d parent-overflows, %d sibling-overlaps",
+        label or "?", #r.captionClips, #r.parentOverflows, #r.overlaps))
+      for _, x in ipairs(r.captionClips) do
+        MT.diag(string.format("  CAPCLIP [%s] '%s' needs %dpx in %dpx", x.klass, x.caption, x.needed, x.width))
+      end
+      for _, x in ipairs(r.parentOverflows) do
+        MT.diag(string.format("  OVERFLOW [%s] '%s' right=%d &gt; parent=%d (over by %d)",
+          x.klass, x.caption, x.right, x.parentW, x.overshoot))
+      end
+      for _, x in ipairs(r.overlaps) do
+        MT.diag(string.format("  OVERLAP [%s '%s'] @ %d,%d %dx%d ↔ [%s '%s'] @ %d,%d %dx%d",
+          x.a.klass, x.a.caption, x.a.L, x.a.T, x.a.W, x.a.H,
+          x.b.klass, x.b.caption, x.b.L, x.b.T, x.b.W, x.b.H))
+      end
+    end
+  end
+  return r
+end
+
 
 -- Table of thread-gated controls: each entry = {panel=, btn=, edit=nil}
 _threadGatedControls = {}
@@ -2722,6 +3034,13 @@ end
 function InlineRow:gap(px)
   self.x = self.x + (px or 20)
   return self
+end
+
+function InlineRow:makeToggle(caption, enableFn, disableFn, needsThread)
+  local width = self:_capWidth(self.x, 180)
+  local pnl, btn = MT.ui.makeToggle(self.parent, self.x, self.y, width, self.h, caption, enableFn, disableFn, needsThread)
+  self.x = self.x + width + self.spacing
+  return pnl, btn
 end
 
 -- Snap to absolute column position (relative to row origin x0)
@@ -3594,12 +3913,12 @@ MT.config.load()
 -- ============================================================
 -- MT.cheats -- Cheat Logic Functions
 -- ============================================================
-MT.cheats = {}
-MT.cheats.resources = {}
-MT.cheats.stats = {}
-MT.cheats.battle = {}
-MT.cheats.explore = {}
-MT.cheats.sect = {}
+MT.cheats = MT.cheats or {}
+MT.cheats.resources = MT.cheats.resources or {}
+MT.cheats.stats = MT.cheats.stats or {}
+MT.cheats.battle = MT.cheats.battle or {}
+MT.cheats.explore = MT.cheats.explore or {}
+MT.cheats.sect = MT.cheats.sect or {}
 
 -- ── Resources ────────────────────────────────────────────────
 
@@ -4553,6 +4872,365 @@ function MT.cheats.sect.build1Day()
   return string.format("%d个建筑操作剩余1天", completed)
 end
 
+-- ============================================================
+-- Special Building Limit — patches AreaBuildController.GetMaxSpeBuildingNum
+-- to return a constant value instead of game's force-level scaling (5/6/7).
+-- Method body is replaced with `mov eax, imm32; ret` (6 bytes).
+-- ============================================================
+MT.cheats.sect._speBuildOrigBytes = nil
+MT.cheats.sect._speBuildAddr = nil
+
+local function _resolveSpeBuildFunc()
+  local c = MT.il2cpp.init()
+  local cls = c.findClass("AreaBuildController")
+  if not cls then error("AreaBuildController未找到 class not found") end
+  local getMeth = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+  if not getMeth or getMeth == 0 then error("il2cpp导出缺失 class_get_method_from_name unavailable") end
+  local nm = allocateMemory(32); writeString(nm, "GetMaxSpeBuildingNum")
+  local mi = executeCodeEx(0, nil, getMeth, cls, nm, 0)
+  deAlloc(nm)
+  if not mi or mi == 0 then error("GetMaxSpeBuildingNum未找到") end
+  local funcAddr = readQword(mi)
+  if not funcAddr or funcAddr == 0 then error("函数地址为空") end
+  return funcAddr
+end
+
+function MT.cheats.sect.speBuildLimitEnable(val)
+  local limit = tonumber(val) or 99
+  if limit &lt; 0 then limit = 0 end
+  if limit &gt; 0x7FFFFFFF then limit = 0x7FFFFFFF end
+  local funcAddr = _resolveSpeBuildFunc()
+  if not MT.cheats.sect._speBuildOrigBytes then
+    MT.cheats.sect._speBuildOrigBytes = readBytes(funcAddr, 6, true)
+    MT.cheats.sect._speBuildAddr = funcAddr
+  end
+  -- B8 &lt;imm32 LE&gt; C3   →   mov eax, imm32 ; ret
+  writeBytes(funcAddr,
+    0xB8,
+    limit &amp; 0xFF,
+    (limit &gt;&gt; 8) &amp; 0xFF,
+    (limit &gt;&gt; 16) &amp; 0xFF,
+    (limit &gt;&gt; 24) &amp; 0xFF,
+    0xC3)
+  return string.format("特殊建筑上限 = %d", limit)
+end
+
+function MT.cheats.sect.speBuildLimitDisable()
+  local addr = MT.cheats.sect._speBuildAddr
+  local orig = MT.cheats.sect._speBuildOrigBytes
+  if not addr or not orig then return "未启用" end
+  writeBytes(addr, orig)
+  MT.cheats.sect._speBuildOrigBytes = nil
+  MT.cheats.sect._speBuildAddr = nil
+  return "已恢复原值"
+end
+
+-- src/16_cheats_city.lua — City planner cheats (MT.cheats.city)
+-- ============================================================
+-- Read/mutate area tile grids and instantly swap buildings.
+-- Uses GameController's DestroyBuilding / BuildingBuildStart / BuildBuilding
+-- via il2cpp_runtime_invoke. All 3 calls execute on the main thread via cmd=8.
+-- ============================================================
+MT.cheats = MT.cheats or {}
+MT.cheats.city = {}
+
+-- MI cache keyed by GA base — auto-invalidates on game restart.
+local _cityMI = {gaBase = nil, destroy = nil, buildStart = nil, buildDone = nil, upgrade = nil}
+
+local function _resolveCityMethods()
+  local c = MT.il2cpp.init()
+  if _cityMI.gaBase == c._gaBase and _cityMI.destroy and _cityMI.buildStart
+     and _cityMI.buildDone and _cityMI.upgrade then return true end
+  _cityMI.destroy = nil; _cityMI.buildStart = nil
+  _cityMI.buildDone = nil; _cityMI.upgrade = nil
+  if not c.gc or not c.gc.klass then return false, "GameController class not resolved" end
+  local getMeth = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+  if not getMeth or getMeth == 0 then return false, "il2cpp_class_get_method_from_name unavailable" end
+  local function resolve(name, n)
+    local nb = allocateMemory(32); writeString(nb, name)
+    local m = executeCodeEx(0, nil, getMeth, c.gc.klass, nb, n)
+    deAlloc(nb)
+    return (m and m ~= 0) and m or nil
+  end
+  local d  = resolve("DestroyBuilding", 3)
+  local bs = resolve("BuildingBuildStart", 3)
+  local bd = resolve("BuildBuilding", 3)
+  local up = resolve("UpgradeBuilding", 3)
+  if not d  then return false, "DestroyBuilding MI missing" end
+  if not bs then return false, "BuildingBuildStart MI missing" end
+  if not bd then return false, "BuildBuilding MI missing" end
+  if not up then return false, "UpgradeBuilding MI missing" end
+  _cityMI.gaBase = c._gaBase
+  _cityMI.destroy, _cityMI.buildStart, _cityMI.buildDone, _cityMI.upgrade = d, bs, bd, up
+  return true
+end
+
+-- ============================================================
+-- Read helpers
+-- ============================================================
+
+-- Returns list of AreaData pointers owned by the player (belongForceID matches).
+function MT.cheats.city.getPlayerAreas()
+  MT.game.checkAlive()
+  local hero = MT.game.getHero()
+  if not hero then error("Hero null") end
+  local playerForceID = readInteger(hero + 0x84)
+  local wd = MT.game.getWorldData()
+  if not wd then error("WorldData null") end
+  local areasList = readQword(wd + 0x30)
+  if not areasList or areasList == 0 then return {} end
+  local items = readQword(areasList + 0x10)
+  local count = readInteger(areasList + 0x18) or 0
+  local out = {}
+  for i = 0, count - 1 do
+    local a = readQword(items + 0x20 + i * 8)
+    if a and a ~= 0 then
+      local fid = readInteger(a + 0x70) or 0
+      if fid == 0xFFFFFFFF then fid = -1 end  -- normalize unsigned read
+      if fid == playerForceID then
+        table.insert(out, a)
+      end
+    end
+  end
+  return out
+end
+
+-- Read an area's name (UTF-16 string)
+function MT.cheats.city.getAreaName(area)
+  if not area or area == 0 then return "" end
+  local np = readQword(area + 0x18)
+  if not np or np == 0 then return "" end
+  local nl = readInteger(np + 0x10) or 0
+  if nl &lt;= 0 then return "" end
+  return readString(np + 0x14, math.min(nl, 100) * 2, true) or ""
+end
+
+-- Returns {width, height, tiles=[{ptr,row,col,tileType,buildingID,buildingLv,buildingName,protected}, ...]}
+function MT.cheats.city.getAreaGrid(area)
+  if not area or area == 0 then return nil end
+  local w = readInteger(area + 0xB8) or 0
+  local h = readInteger(area + 0xBC) or 0
+  local tilesList = readQword(area + 0xC0)
+  if not tilesList or tilesList == 0 then return {width=w, height=h, tiles={}} end
+  local items = readQword(tilesList + 0x10)
+  local count = readInteger(tilesList + 0x18) or 0
+  local tiles = {}
+  for i = 0, count - 1 do
+    local t = readQword(items + 0x20 + i * 8)
+    if t and t ~= 0 then
+      local entry = {
+        ptr = t,
+        row = readInteger(t + 0x44) or 0,
+        col = readInteger(t + 0x48) or 0,
+        tileType = readInteger(t + 0x30) or 0,
+        buildingID = -1, buildingLv = 0, buildingName = "", protected = false,
+        roadLv = 0, isRoad = false,
+      }
+      local bp = readQword(t + 0x28)
+      if bp and bp ~= 0 then
+        local rawID = readInteger(bp + 0x10) or -1
+        if rawID == 0xFFFFFFFF then rawID = -1 end  -- CE readInteger returns unsigned
+        entry.buildingID = rawID
+        entry.buildingLv = readInteger(bp + 0x14) or 0
+        entry.protected = (rawID == -1)
+      end
+      local rp = readQword(t + 0x38)  -- areaRoadData
+      if rp and rp ~= 0 then
+        local rLv = readInteger(rp + 0x14) or 0
+        -- Out-of-range = the object was probably GC'd and memory reused.
+        -- Treat as no road so the UI doesn't show garbage.
+        if rLv &lt; 0 or rLv &gt; 100 then
+          entry.isRoad = false
+        else
+          entry.isRoad = true
+          entry.roadLv = rLv
+        end
+      end
+      table.insert(tiles, entry)
+    end
+  end
+  return {width = w, height = h, tiles = tiles}
+end
+
+-- Returns array of {id, name} for all entries in GameDataController.buildingDataBase
+function MT.cheats.city.getAllBuildings()
+  local c = MT.il2cpp.init()
+  if not c.gdc then c:ensure("gdc", "GameDataController", 0x20) end
+  local gdcInst = readQword(c.gdc.static + c.gdc.instOff)
+  if not gdcInst or gdcInst == 0 then return {} end
+  local lst = readQword(gdcInst + 0xE0)  -- buildingDataBase
+  if not lst or lst == 0 then return {} end
+  local items = readQword(lst + 0x10)
+  local count = readInteger(lst + 0x18) or 0
+  local out = {}
+  for i = 0, count - 1 do
+    local b = readQword(items + 0x20 + i * 8)
+    if b and b ~= 0 then
+      local np = readQword(b + 0x10)
+      local name = ""
+      if np and np ~= 0 then
+        local nl = readInteger(np + 0x10) or 0
+        if nl &gt; 0 then name = readString(np + 0x14, math.min(nl, 50) * 2, true) or "" end
+      end
+      table.insert(out, {id = i, name = name})
+    end
+  end
+  return out
+end
+
+-- ============================================================
+-- Write: instant tile-building swap
+-- ============================================================
+
+-- Swap the building on `tile` to `newBuildingID` instantly, optionally upgrading
+-- to `newLv` (1 = no upgrade; max effective is 10 per game's UpgradeBuilding cap).
+-- Sequence:
+--   1) DestroyBuilding(area, tile, false)   -- nulls tile.building if present
+--   2) BuildingBuildStart(tile, newID, false)  -- allocates new AreaBuildingData
+--   3) Write newBuildingData.buildTimeLeft = 0
+--   4) BuildBuilding(area, newBuildingData, false)  -- applies all effects (lv=1)
+--   5) For i = 2..newLv, call UpgradeBuilding(area, newBldg, false)
+function MT.cheats.city.swapTileBuilding(area, tile, newBuildingID, newLv)
+  if not area or area == 0 then return false, "area null" end
+  if not tile or tile == 0 then return false, "tile null" end
+  newLv = tonumber(newLv) or 1
+  if newLv &lt; 1 then newLv = 1 end
+  if newLv &gt; 10 then newLv = 10 end
+  local ok, err = _resolveCityMethods()
+  if not ok then return false, err end
+  local c = MT.il2cpp.init()
+  local gcInst = readQword(c.gc.static + c.gc.instOff)
+  if not gcInst or gcInst == 0 then return false, "GameController instance null" end
+
+  -- Refuse special tiles (CityWall=-1, CityGate=-2, Null=-3). These shouldn't
+  -- accept buildings; calling BuildingBuildStart on them risks corruption.
+  local curType = readInteger(tile + 0x30) or 0
+  if curType &lt; 0 then
+    return false, string.format("tile is protected (tileType=%d)", curType)
+  end
+
+  -- Refuse protected (center / obstacle) buildings (buildingID == -1)
+  local curBldg = readQword(tile + 0x28)
+  if curBldg and curBldg ~= 0 then
+    local bid = readInteger(curBldg + 0x10) or 0
+    if bid == -1 or bid == 0xFFFFFFFF then
+      return false, "tile has protected building (id=-1)"
+    end
+  end
+
+  -- Scratch buffers for value-type args
+  local boolBuf = allocateMemory(1); writeBytes(boolBuf, 0)         -- showInfo = false
+  local idBuf   = allocateMemory(4); writeInteger(idBuf, newBuildingID)
+
+  local function cleanup()
+    deAlloc(boolBuf); deAlloc(idBuf)
+  end
+
+  -- 1) Destroy current (if any)
+  if curBldg and curBldg ~= 0 then
+    ok, err = MT.hook.invokeRuntime(gcInst, _cityMI.destroy, {area, tile, boolBuf})
+    if not ok then cleanup(); return false, "Destroy: " .. tostring(err) end
+  end
+
+  -- 2) Start build
+  ok, err = MT.hook.invokeRuntime(gcInst, _cityMI.buildStart, {tile, idBuf, boolBuf})
+  if not ok then cleanup(); return false, "BuildStart: " .. tostring(err) end
+
+  -- 3) Skip build time on the new AreaBuildingData
+  local newBldg = readQword(tile + 0x28)
+  if not newBldg or newBldg == 0 then cleanup(); return false, "new building not assigned to tile" end
+  writeInteger(newBldg + 0x18, 0)  -- buildTimeLeft
+
+  -- 4) Complete build (applies production / effects, lv=1)
+  ok, err = MT.hook.invokeRuntime(gcInst, _cityMI.buildDone, {area, newBldg, boolBuf})
+  if not ok then cleanup(); return false, "Build: " .. tostring(err) end
+
+  -- 5) Upgrade to desired lv (each call adds +1, applies all side effects)
+  for _ = 2, newLv do
+    ok, err = MT.hook.invokeRuntime(gcInst, _cityMI.upgrade, {area, newBldg, boolBuf})
+    if not ok then cleanup(); return false, "Upgrade: " .. tostring(err) end
+  end
+
+  cleanup()
+  return true, string.format("swapped (lv %d)", newLv)
+end
+
+-- Delete the building on a tile via GameController.DestroyBuilding RPC.
+-- Returns false if there is no building or it's protected (id=-1).
+function MT.cheats.city.deleteBuilding(area, tile)
+  if not area or area == 0 then return false, "area null" end
+  if not tile or tile == 0 then return false, "tile null" end
+  local cur = readQword(tile + 0x28)
+  if not cur or cur == 0 then return false, "no building on this tile" end
+  if readInteger(cur + 0x10) == -1 then
+    return false, "protected building (id=-1)"
+  end
+  local ok, err = _resolveCityMethods()
+  if not ok then return false, err end
+  local c = MT.il2cpp.init()
+  local gcInst = readQword(c.gc.static + c.gc.instOff)
+  if not gcInst or gcInst == 0 then return false, "GameController instance null" end
+  local boolBuf = allocateMemory(1); writeBytes(boolBuf, 0)
+  ok, err = MT.hook.invokeRuntime(gcInst, _cityMI.destroy, {area, tile, boolBuf})
+  deAlloc(boolBuf)
+  if not ok then return false, "Destroy: " .. tostring(err) end
+  return true, "building deleted"
+end
+
+-- Set the roadLv of an existing road on a single tile.
+-- Refuses if the tile has no road (we do NOT allocate new road objects — that
+-- path turned out to be unstable on irregular town layouts and could wipe an
+-- entire city). Safe operation: just rewrites the level field + clears the
+-- per-road upgrade timer.
+function MT.cheats.city.setRoadLevel(area, tile, lv)
+  if not tile or tile == 0 then return false, "tile null" end
+  local road = readQword(tile + 0x38)
+  if not road or road == 0 then return false, "此格不是道路 (no road on this tile)" end
+  lv = tonumber(lv) or 1
+  if lv &lt; 1 then lv = 1 end
+  if lv &gt; 99 then lv = 99 end
+  writeInteger(road + 0x14, lv)   -- roadLv
+  writeInteger(road + 0x18, 0)    -- upgradeTimeLeft
+  if area and area ~= 0 then
+    pcall(function() writeBytes(area + 0xF0, 1) end)
+  end
+  return true, string.format("道路等级 → %d", lv)
+end
+
+-- Upgrade every road tile in an area to `targetLv` (1-5 typical).
+-- Roads have no game-side upgrade method; we write roadLv directly + clear
+-- upgradeTimeLeft. Returns (ok, msg, count).
+function MT.cheats.city.upgradeAllRoads(area, targetLv)
+  if not area or area == 0 then return false, "area null", 0 end
+  targetLv = tonumber(targetLv) or 3
+  if targetLv &lt; 1 then targetLv = 1 end
+  if targetLv &gt; 99 then targetLv = 99 end
+  local tilesList = readQword(area + 0xC0)
+  if not tilesList or tilesList == 0 then return false, "tile list null", 0 end
+  local items = readQword(tilesList + 0x10)
+  local count = readInteger(tilesList + 0x18) or 0
+  local upgraded = 0
+  for i = 0, count - 1 do
+    local t = readQword(items + 0x20 + i * 8)
+    if t and t ~= 0 then
+      local road = readQword(t + 0x38)
+      if road and road ~= 0 then
+        local curLv = readInteger(road + 0x14) or 0
+        -- Treat out-of-range values as garbage from a freed-then-reused road object
+        if curLv &lt; 0 or curLv &gt; 100 then curLv = 0 end
+        if curLv &lt; targetLv then
+          writeInteger(road + 0x14, targetLv)   -- roadLv
+          writeInteger(road + 0x18, 0)          -- upgradeTimeLeft
+          upgraded = upgraded + 1
+        end
+      end
+    end
+  end
+  -- Mark area dirty so UI repaints
+  pcall(function() writeBytes(area + 0xF0, 1) end)
+  return true, string.format("%d roads → lv %d", upgraded, targetLv), upgraded
+end
+
 -- src/99_compat.lua — Backward-compatibility aliases and process watcher
 -- ============================================================
 -- Backward-compatibility aliases (old entries call these directly)
@@ -4611,6 +5289,11 @@ if not _processWatcherInstalled then
     _staleCheckTimer = timer
   end
   _processWatcherInstalled = true
+end
+
+-- Load persisted affix preset (MT.config is ready by now)
+if MT.cheats and MT.cheats.affix and MT.cheats.affix.load then
+  pcall(MT.cheats.affix.load)
 end
 
 -- print suppressed — opens Lua Engine window which confuses users
