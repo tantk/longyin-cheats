@@ -121,7 +121,22 @@ function MT.cheats.sect.resourceLimitEnable(scale)
     writeInteger(m.dispAddr, (buf + (i - 1) * 4) - m.instrEnd)
   end
   MT.cheats.sect._resHook = { buf = buf, saved = saved }
-  return string.format("资源上限 ×%d (recompute will raise caps)", s)
+  -- Apply immediately so the caps update NOW instead of waiting for the next
+  -- recompute. newCap = currentCap × s, which equals what the redirected
+  -- recompute will produce (base×s × buildingMult), so the two stay in sync.
+  pcall(function()
+    local fd = MT.cheats.sect.getPlayerForceData()
+    local lst = readQword(fd + 0x90)
+    if not lst or lst == 0 then return end
+    local items = readQword(lst + 0x10)
+    local count = readInteger(lst + 0x18) or 0
+    if not items or items == 0 or count <= 0 or count > 64 then return end
+    for i = 0, count - 1 do
+      local cur = readFloat(items + 0x20 + i * 4)
+      if cur and cur > 0 then writeFloat(items + 0x20 + i * 4, cur * s) end
+    end
+  end)
+  return string.format("资源上限 ×%d (applied now + future recomputes)", s)
 end
 
 function MT.cheats.sect.resourceLimitDisable()
