@@ -306,6 +306,12 @@ do
 
   MT.ui.makeToggleInput(tabGeneral, COL2_X, y2, BTN_W, BTN_H, "博学多才 LivingEXP %", 80, "300",
     MT.cheats.stats.livingExpEnable, MT.cheats.stats.livingExpDisable, false)
+  y2 = y2 + ROW_H
+
+  -- Lock the skill-study minigame score (ReadBookController). While ON, any
+  -- open study minigame's score is forced to the entered value — finish to bank it.
+  MT.ui.makeToggleInput(tabGeneral, COL2_X, y2, BTN_W, BTN_H, "学习评分锁定 StudyScore", 80, "9999",
+    MT.cheats.study.scoreEnable, MT.cheats.study.scoreDisable, false)
   y2 = y2 + ROW_H + SECTION_GAP
 
   sectionLabel(tabGeneral, COL2_X, y2, "探索 Exploration")
@@ -358,6 +364,22 @@ do
   -- 1. Member Limit 门派人数上限 (toggle -- hooks GetMaxHeroNum + PopulationNotFull)
   MT.ui.makeToggleInput(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "人数上限 MemberLimit", 80, "300",
     MT.cheats.sect.memberLimitEnable, MT.cheats.sect.memberLimitDisable, true)
+  sectY = sectY + SECT_ROW_H
+
+  -- 1b. Book Storage Weight Limit 书库负重上限 (one-shot; ForceData.bookStorage.maxWeight)
+  MT.ui.makeInput(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "书库负重上限 BookLimit", 80, "9999",
+    MT.cheats.sect.setBookStorageLimit, false)
+  sectY = sectY + SECT_ROW_H
+
+  -- 1c. Resource Caps 资源上限倍数 (toggle — redirects CountForceData base constants ×N;
+  --      input is a MULTIPLIER on the game's base caps, since cap = base × buildings)
+  MT.ui.makeToggleInput(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "资源上限倍数 ResMult", 80, "40",
+    MT.cheats.sect.resourceLimitEnable, MT.cheats.sect.resourceLimitDisable, true)
+  sectY = sectY + SECT_ROW_H
+
+  -- 1d. Territory Limit 领地上限 (toggle — hooks ForceData.GetMaxAreaNum)
+  MT.ui.makeToggleInput(tabSect, SECT_X, sectY, SECT_BTN_W, SECT_BTN_H, "领地上限 TerritoryLimit", 80, "99",
+    MT.cheats.sect.territoryLimitEnable, MT.cheats.sect.territoryLimitDisable, true)
   sectY = sectY + SECT_ROW_H
 
   -- 2a. Sect Talent Points 全派天赋点
@@ -1036,34 +1058,48 @@ do
   L2:advanceRow()
 
   -- Populate sub-type dropdown from GDC database or staticItems
+  -- Maps dropdown position (1-based) -> the value to pass to GenerateX as dbIndex.
+  -- For the live DBs this is the dict KEY (item id); the equip DBs changed
+  -- List -> Dictionary<int, ItemData> in 2026-06-04, so we must NOT iterate as a
+  -- List (reading count off +0x18 yields the entries pointer -> billions -> hang).
+  local _equipSubKeys = {}
   local function populateEquipSub()
     cmbEquipSub.Items.clear()
+    _equipSubKeys = {}
     local typeIdx = cmbEquipType.ItemIndex
     local db = MT.hook.equipDBs[typeIdx + 1]
     if not db then return end
     if db.staticItems then
-      for _, name in ipairs(db.staticItems) do cmbEquipSub.Items.add(name) end
+      for i, name in ipairs(db.staticItems) do
+        cmbEquipSub.Items.add(name)
+        _equipSubKeys[i] = i - 1  -- static lists are positional (unchanged behavior)
+      end
     elseif db.off then
       pcall(function()
         local c = MT.il2cpp.init()
         if not c:ensure("gdc", "GameDataController", 0x20) then return end
         local gdcInst = readQword(c.gdc.static + c.gdc.instOff)
         if not gdcInst or gdcInst == 0 then return end
-        local dbList = readQword(gdcInst + db.off)
-        if not dbList or dbList == 0 then return end
-        local dbItems = readQword(dbList + 0x10)
-        local dbCount = readInteger(dbList + 0x18)
-        if not dbItems or dbCount <= 0 then return end
+        local dbDict = readQword(gdcInst + db.off)   -- Dictionary<int, ItemData>
+        if not dbDict or dbDict == 0 then return end
+        local entries = readQword(dbDict + 0x18)     -- Entry[] array
+        local dbCount = readInteger(dbDict + 0x20)   -- count
+        if not entries or entries == 0 then return end
+        if not dbCount or dbCount < 0 or dbCount > 5000 then return end  -- clamp (anti-hang)
+        local base = entries + 0x20
         for i = 0, dbCount - 1 do
-          local item = readQword(dbItems + 0x20 + i * 8)
+          local e = base + i * 0x18
+          local item = readQword(e + 0x10)           -- Entry.value (ItemData*)
           if item and item ~= 0 then
-            local np = readQword(item + 0x20)
+            local key = readInteger(e + 0x8)          -- Entry.key (item id)
+            local np = readQword(item + 0x20)         -- ItemData.name (unchanged offset)
             local name = ""
             if np and np ~= 0 then
               local nl = readInteger(np + 0x10)
               if nl and nl > 0 then name = readString(np + 0x14, nl * 2, true) or "" end
             end
-            cmbEquipSub.Items.add(string.format("%d %s", i, name))
+            cmbEquipSub.Items.add(string.format("%d %s", key, name))
+            _equipSubKeys[cmbEquipSub.Items.Count] = key  -- position -> id
           end
         end
       end)
@@ -1086,7 +1122,10 @@ do
     if subIdx < 0 then error("请选择子类型") end
     local db = MT.hook.equipDBs[typeIdx + 1]
     if not db or not db.genRVA then error("RVA not resolved") end
-    return select(2, assert(MT.items.addEquipGenerated(db.genRVA, subIdx, tonumber(edtEqLv.Text) or 5, tonumber(edtEqRare.Text) or 5)))
+    -- Pass the item id (dict key), not the dropdown position — the DB is now a
+    -- Dictionary keyed by id; GenerateX looks up by id.
+    local dbIndex = _equipSubKeys[subIdx + 1] or subIdx
+    return select(2, assert(MT.items.addEquipGenerated(db.genRVA, dbIndex, tonumber(edtEqLv.Text) or 5, tonumber(edtEqRare.Text) or 5)))
   end)
   L2:advanceRow()
 
@@ -1819,6 +1858,15 @@ do
   -- ───── Row 4+: tile grid (created on demand) ─────
   local GRID_Y = r3Y + BTN_H + 10
 
+  -- Tile buttons live on a dedicated child panel. Hiding it during a rebuild
+  -- collapses ~N per-button repaints into ONE, and the buttons are pooled
+  -- (reused/repositioned) across city switches instead of destroyed+recreated.
+  local _gridPanel = createPanel(tabCity)
+  _gridPanel.Left = MG; _gridPanel.Top = GRID_Y
+  _gridPanel.Width = 10; _gridPanel.Height = 10
+  _gridPanel.BevelOuter = 0
+  _gridPanel.Color = 0xF0F0F0  -- match form bg (tabCity.Color reads as 0/black); blends the 1px tile gaps
+
   -- ───── Status bar at bottom (position calculated at refresh time using ClientHeight) ─────
   local lblStatus = createLabel(tabCity)
   lblStatus.Left = MG
@@ -1847,10 +1895,8 @@ do
   end
 
   local function _clearTileButtons()
-    for _, b in ipairs(_tileButtons) do
-      pcall(function() b.destroy() end)
-    end
-    _tileButtons = {}
+    -- Pooled: do NOT destroy buttons (that's the slow path). Just clear the
+    -- selection; _refreshGrid reuses the pool and hides any surplus.
     _selectedTile = nil
     _selectedBtn = nil
     pcall(function() btnSetRoadLv.Enabled = false end)
@@ -1875,7 +1921,7 @@ do
     local ok, err = pcall(function() grid = MT.cheats.city.getAreaGrid(area) end)
     if not ok or not grid then lblStatus.Caption = "读取失败: " .. tostring(err); return end
 
-    local GX, GY = MG, GRID_Y
+    -- (grid origin is the panel origin now; tile coords are panel-relative)
     -- Auto-fit cells to BOTH width and height to fill the available tab area
     local tabW, tabH = 1000, 600
     pcall(function() tabW = tabCity.ClientWidth or tabCity.Width or 1000 end)
@@ -1899,13 +1945,23 @@ do
     elseif minDim >= 64  then fontSize = 10
     elseif minDim >= 50  then fontSize = 9
     else                      fontSize = 8 end
+    -- Size + hide the grid panel so the whole rebuild is ONE repaint, not ~N.
+    pcall(function() _gridPanel.Width = availW; _gridPanel.Height = availH end)
+    pcall(function() _gridPanel.Visible = false end)
+    local _nTiles = 0
+    pcall(function()  -- protect the rebuild so the panel is ALWAYS re-shown below
     for _, t in ipairs(grid.tiles) do
-      local b = createButton(tabCity)
+      _nTiles = _nTiles + 1
+      -- Reuse a pooled button if available; only create when the pool is short.
+      local b = _tileButtons[_nTiles]
+      if not b then b = createButton(_gridPanel); _tileButtons[_nTiles] = b end
       -- Flip Y: game's row 0 is at the bottom of the map, render row 0 at the bottom of UI
       local visualRow = (grid.height - 1) - t.row
-      b.Left = GX + t.col * (CW + PAD)
-      b.Top  = GY + visualRow * (CH + PAD)
+      b.Left = t.col * (CW + PAD)       -- panel-relative: panel origin IS the grid origin
+      b.Top  = visualRow * (CH + PAD)
       b.Width = CW; b.Height = CH
+      pcall(function() b.Color = 0xF0F0F0 end)       -- reset prior selection highlight
+      pcall(function() b.Font.Color = 0x000000 end)  -- reset prior empty/road gray
       local cap, isEmpty, isRoad
       if t.buildingID == -1 then
         if t.protected then cap = "·"; isEmpty = false
@@ -1954,8 +2010,14 @@ do
         if #parts == 0 then parts[1] = "(空)" end
         lblSel.Caption = string.format("已选: r%d c%d | %s", row, col, table.concat(parts, ", "))
       end
-      table.insert(_tileButtons, b)
+      pcall(function() b.Visible = true end)
     end
+    -- Hide surplus pooled buttons left over from a previously-larger city.
+    for i = _nTiles + 1, #_tileButtons do
+      pcall(function() _tileButtons[i].Visible = false end)
+    end
+    end)  -- close the protected rebuild block
+    pcall(function() _gridPanel.Visible = true end)  -- ALWAYS restore visibility, even if the rebuild errored
     lblStatus.Caption = string.format("%s — %d×%d tiles", MT.cheats.city.getAreaName(area), grid.width, grid.height)
   end
 
@@ -2262,7 +2324,15 @@ pcall(function()
   pcall(MT.cheats.battle.battleSpeedDisable)
   pcall(MT.cheats.explore.horseSpeedDisable)
   pcall(MT.cheats.stats.creationTalentSlotDisable)
+  pcall(MT.cheats.sect.speBuildLimitDisable)  -- patches GetMaxSpeBuildingNum; must revert on teardown
+  pcall(MT.cheats.sect.territoryLimitDisable) -- restore GetMaxAreaNum code patch
+  pcall(MT.cheats.sect.resourceLimitDisable)  -- kill the resource-cap freeze timer
+  pcall(MT.cheats.study.scoreDisable)         -- kill the study-score lock timer
   -- Sect talent slots now delegates to stats.talentSlotEnable, so talentSlotDisable handles both
+
+  -- Affix preset is per-session: clear the toggle so it can't apply silently
+  -- after a disable/re-enable cycle (the rebuilt checkbox starts unchecked).
+  if MT.cheats and MT.cheats.affix then MT.cheats.affix.enabled = false end
 
   -- 3. Clean up hook, dealloc memory, restore Update
   MT.hook.cleanup()

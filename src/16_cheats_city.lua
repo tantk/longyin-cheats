@@ -87,6 +87,10 @@ function MT.cheats.city.getAreaGrid(area)
   if not tilesList or tilesList == 0 then return {width=w, height=h, tiles={}} end
   local items = readQword(tilesList + 0x10)
   local count = readInteger(tilesList + 0x18) or 0
+  -- Clamp: count comes straight from game memory. A wrong offset (after a game
+  -- update) or a transient garbage read could make this huge and freeze CE's
+  -- GUI thread in the per-tile read loop below. Real areas are well under 2000.
+  if count < 0 or count > 2000 then count = 0 end
   local tiles = {}
   for i = 0, count - 1 do
     local t = readQword(items + 0x20 + i * 8)
@@ -131,21 +135,31 @@ function MT.cheats.city.getAllBuildings()
   if not c.gdc then c:ensure("gdc", "GameDataController", 0x20) end
   local gdcInst = readQword(c.gdc.static + c.gdc.instOff)
   if not gdcInst or gdcInst == 0 then return {} end
-  local lst = readQword(gdcInst + 0xE0)  -- buildingDataBase
-  if not lst or lst == 0 then return {} end
-  local items = readQword(lst + 0x10)
-  local count = readInteger(lst + 0x18) or 0
+  -- buildingDataBase changed List -> Dictionary<int, AreaBuildingDataBase> in the
+  -- 2026-06-04 update. Iterate the Dictionary's Entry[] and read each building's
+  -- own id/name (AreaBuildingDataBase also gained an `id` at 0x10, pushing name to
+  -- 0x18). Canonical Unity 2020.3 IL2CPP dict layout: entries@0x18, count@0x20,
+  -- Entry = {int hashCode; int next; int key; pad; ptr value} (0x18 bytes), value@0x10.
+  local dict = readQword(gdcInst + 0xE0)
+  if not dict or dict == 0 then return {} end
+  local entries = readQword(dict + 0x18)
+  local count = readInteger(dict + 0x20) or 0
+  if not entries or entries == 0 then return {} end
+  if count < 0 or count > 5000 then count = 0 end  -- clamp garbage/bad-offset reads
   local out = {}
+  local ENTRY_SIZE = 0x18
+  local base = entries + 0x20  -- Il2CppArray element data
   for i = 0, count - 1 do
-    local b = readQword(items + 0x20 + i * 8)
+    local b = readQword(base + i * ENTRY_SIZE + 0x10)  -- Entry.value (AreaBuildingDataBase*)
     if b and b ~= 0 then
-      local np = readQword(b + 0x10)
+      local id = readInteger(b + 0x10) or -1            -- AreaBuildingDataBase.id
+      local np = readQword(b + 0x18)                     -- AreaBuildingDataBase.name (System.String)
       local name = ""
       if np and np ~= 0 then
         local nl = readInteger(np + 0x10) or 0
         if nl > 0 then name = readString(np + 0x14, math.min(nl, 50) * 2, true) or "" end
       end
-      table.insert(out, {id = i, name = name})
+      if id and id >= 0 then table.insert(out, {id = id, name = name}) end
     end
   end
   return out
@@ -282,6 +296,7 @@ function MT.cheats.city.upgradeAllRoads(area, targetLv)
   if not tilesList or tilesList == 0 then return false, "tile list null", 0 end
   local items = readQword(tilesList + 0x10)
   local count = readInteger(tilesList + 0x18) or 0
+  if count < 0 or count > 2000 then count = 0 end  -- clamp garbage/bad-offset reads
   local upgraded = 0
   for i = 0, count - 1 do
     local t = readQword(items + 0x20 + i * 8)

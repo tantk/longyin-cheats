@@ -1432,10 +1432,11 @@ function MT.hook.discover(fastMode)
   S.OFF_MEDFOOD = 0x68  -- default (f7.6+/f8)
   S.OFF_HORSE = 0x88
   if S.gdc and S.gdc ~= 0 then
-    local hdb = readQword(S.gdc + 0x120) -- horseDataBase
+    local hdb = readQword(S.gdc + 0x120) -- horseDataBase: Dictionary&lt;int,ItemData&gt; (List pre-2026-06-04)
     if hdb and hdb ~= 0 then
-      local hitems = readQword(hdb + 0x10)
-      local ht = hitems and readQword(hitems + 0x20) -- first horse template
+      -- Dict layout: entries@0x18; first Entry's value (ItemData*) at entries+0x20+0x10
+      local entries = readQword(hdb + 0x18)
+      local ht = entries and readQword(entries + 0x20 + 0x10) -- first horse template
       if ht and ht ~= 0 then
         local at88 = readQword(ht + 0x88)
         local at80 = readQword(ht + 0x80)
@@ -4104,7 +4105,7 @@ function MT.cheats.resources.setMeteorite(val)
   if not wd then error("世界数据为空 WorldData null") end
   local v = tonumber(val) or 999
   if v &lt; 0 then error("数值无效 Invalid amount") end
-  writeInteger(wd + 0x228, math.floor(v))
+  writeInteger(wd + 0x230, math.floor(v))  -- speEnhanceStone (was 0x228 pre-2026-06-04; WorldData +8 shift)
   return string.format("陨铁已设置为 %d", v)
 end
 
@@ -4516,7 +4517,7 @@ function MT.cheats.battle.battleSpeedEnable(multi)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then speedTimer.Enabled = false; return end
     local ok, wd = pcall(MT.game.getWorldData)
-    if ok and wd then pcall(writeFloat, wd + 0x1D0, speedVal) end
+    if ok and wd then pcall(writeFloat, wd + 0x1D8, speedVal) end  -- battleTimeScale (was 0x1D0; WorldData +8 shift)
   end
   speedTimer.Enabled = true
   MT.cheats.battle._speedState = {timer = speedTimer, val = speedVal}
@@ -4527,7 +4528,7 @@ function MT.cheats.battle.battleSpeedDisable()
   if s and s.timer then s.timer.destroy() end
   MT.cheats.battle._speedState = nil
   local ok, wd = pcall(MT.game.getWorldData)
-  if ok and wd then writeFloat(wd + 0x1D0, 1.0) end
+  if ok and wd then writeFloat(wd + 0x1D8, 1.0) end  -- battleTimeScale (was 0x1D0; WorldData +8 shift)
 end
 
 function MT.cheats.battle.enemyOneHP()
@@ -4674,6 +4675,171 @@ function MT.cheats.sect.getSectMembers()
   end
   if #members == 0 then error("无存活门派成员 No living sect members found") end
   return members, playerForceID
+end
+
+-- Set the sect's martial-art manual storage weight limit (书库负重上限).
+-- ForceData.bookStorage (ItemListData) is at +0xB8; ItemListData.maxWeight is a
+-- float at +0x20. Default game cap is 240; raising it lets the sect store more
+-- manuals. One-shot write (re-apply if the game ever recomputes it).
+function MT.cheats.sect.setBookStorageLimit(val)
+  local v = tonumber(val) or 9999
+  if v &lt; 0 then error("数值无效 Invalid amount") end
+  local fd = MT.cheats.sect.getPlayerForceData()
+  local bookStorage = readQword(fd + 0xB8)
+  if not bookStorage or bookStorage == 0 then error("书库未找到 Book storage not found") end
+  writeFloat(bookStorage + 0x20, v * 1.0)  -- maxWeight
+  return string.format("书库负重上限已设为 %.0f", v)
+end
+
+-- Sect per-resource storage caps (wood/food/ore/herb/silver). The game
+-- RECOMPUTES the caps every few days: GameController.CountForceData builds
+--   resourceStoreMax = [6 base float constants] × storageMultiplier
+-- and clamps current resources to it — so freezing the cap loses a race and
+-- DROPS resources. Instead we redirect the 3 distinct base-constant loads
+-- (movss xmm,[rip]) inside CountForceData to point at our own larger floats,
+-- so the recompute itself produces a huge cap and never clamps. Affects all
+-- forces (constants are global), which the user accepted. Toggle = restore.
+--
+-- Find logic (offsets shift each game build, so locate fresh each enable):
+--   1) resolve CountForceData + GlobalData.ListMulti addresses
+--   2) find the `call ListMulti` site inside CountForceData (E8 rel32)
+--   3) the base list is built just before it: scan back for the 3
+--      `movss xmm,[rip]` (F3 0F 10 0D / F3 0F 10 35) constant loads
+local function _findResBaseConstLoads()
+  local c = MT.il2cpp.init()
+  local gc = c.findClass("GameController"); if not gc then return nil, "GameController not found" end
+  local gd = c.findClass("GlobalData");     if not gd then return nil, "GlobalData not found" end
+  local gmfn = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+  local function MI(cls, name)
+    local nm = allocateMemory(64); writeString(nm, name)
+    local m = executeCodeEx(0, nil, gmfn, cls, nm, -1); deAlloc(nm)
+    return (m and m ~= 0) and m or nil
+  end
+  local cfd = MI(gc, "CountForceData"); if not cfd then return nil, "CountForceData not found" end
+  local lm  = MI(gd, "ListMulti");      if not lm  then return nil, "ListMulti not found" end
+  local fn = readQword(cfd); local lmAddr = readQword(lm)
+  if not fn or fn == 0 or not lmAddr or lmAddr == 0 then return nil, "addr resolve failed" end
+  -- find E8 call to ListMulti within the function
+  local callSite = nil
+  for off = 0, 0x3000 - 5 do
+    local a = fn + off
+    if readBytes(a, 1, false) == 0xE8 and (a + 5 + readInteger(a + 1)) == lmAddr then callSite = a; break end
+  end
+  if not callSite then return nil, "ListMulti call not located" end
+  -- scan back a tight window for movss xmm,[rip] (the 3 base-constant loads)
+  local found = {}
+  for a = callSite - 0x140, callSite - 8 do
+    if readBytes(a,1,false)==0xF3 and readBytes(a+1,1,false)==0x0F and readBytes(a+2,1,false)==0x10 then
+      local modrm = readBytes(a+3,1,false)
+      if modrm == 0x0D or modrm == 0x35 then          -- movss xmm1/xmm6, [rip+disp32]
+        local instrEnd = a + 8
+        found[#found+1] = { dispAddr = a + 4, instrEnd = instrEnd, target = instrEnd + readInteger(a + 4) }
+      end
+    end
+  end
+  return found
+end
+
+function MT.cheats.sect.resourceLimitEnable(scale)
+  MT.game.checkAlive()
+  local s = tonumber(scale) or 40
+  if s &lt; 1 then s = 1 end
+  if MT.cheats.sect._resHook then MT.cheats.sect.resourceLimitDisable() end
+  local found, err = _findResBaseConstLoads()
+  if not found then error("资源基数定位失败 " .. tostring(err)) end
+  if #found ~= 3 then error(string.format("资源基数指令数异常 (found %d, expected 3) — 游戏可能已更新", #found)) end
+  -- one RW float per base, near the first instruction so the rel32 disp reaches
+  local buf = allocateMemory(64, found[1].instrEnd)
+  if not buf or buf == 0 then error("内存分配失败 alloc failed") end
+  -- Validate the redirect disp fits in a signed rel32 for ALL 3 instructions.
+  -- Under high ASLR the nearby alloc can land &gt;2GB away; writing a truncated
+  -- disp would point the movss at a wrong/unmapped address (garbage caps/crash).
+  for i, m in ipairs(found) do
+    local disp = (buf + (i - 1) * 4) - m.instrEnd
+    if disp &lt; -0x80000000 or disp &gt; 0x7FFFFFFF then
+      deAlloc(buf)
+      error("内存分配过远 buf too far for rel32 — retry / restart game")
+    end
+  end
+  local saved = {}
+  for i, m in ipairs(found) do
+    local orig = readFloat(m.target) or 250.0
+    writeFloat(buf + (i - 1) * 4, orig * s)            -- scaled base (preserves per-resource ratio)
+    saved[i] = { dispAddr = m.dispAddr, orig = readInteger(m.dispAddr) }
+    writeInteger(m.dispAddr, (buf + (i - 1) * 4) - m.instrEnd)
+  end
+  MT.cheats.sect._resHook = { buf = buf, saved = saved }
+  return string.format("资源上限 ×%d (recompute will raise caps)", s)
+end
+
+function MT.cheats.sect.resourceLimitDisable()
+  local h = MT.cheats.sect._resHook
+  if h then
+    for _, sv in ipairs(h.saved) do pcall(function() writeInteger(sv.dispAddr, sv.orig) end) end
+    if h.buf then pcall(function() deAlloc(h.buf) end) end
+    MT.cheats.sect._resHook = nil
+  end
+  return "已恢复 Restored"
+end
+
+-- Territory limit (领地上限): ForceData.GetMaxAreaNum() returns a computed float
+-- (forceSpeAddData.Get(0)) — the "5/20" cap. Hook its body to return a constant,
+-- exactly like memberLimit hooks GetMaxHeroNum: movss xmm0,[const]; ret via a
+-- nearby code cave reached with an E9 jmp. Toggle (enable/disable restores).
+function MT.cheats.sect.territoryLimitEnable(newLimit)
+  MT.game.checkAlive()
+  local limit = tonumber(newLimit) or 99
+  if limit &lt; 1 then limit = 1 end
+  -- Re-entry guard: restore first if already hooked (else we'd capture the
+  -- patched bytes as "original" and never be able to restore).
+  if MT.cheats.sect._territoryHook then MT.cheats.sect.territoryLimitDisable() end
+  local c = MT.il2cpp.init()
+  local fdClass = c.findClass("ForceData")
+  if not fdClass then error("ForceData类未找到 ForceData class not found") end
+  local gmfn = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+  local nm = allocateMemory(64); writeString(nm, "GetMaxAreaNum")
+  local mi = executeCodeEx(0, nil, gmfn, fdClass, nm, 0)
+  deAlloc(nm)
+  if not mi or mi == 0 then error("GetMaxAreaNum未找到 not found") end
+  local target = readQword(mi)
+  if not target or target == 0 then error("GetMaxAreaNum地址为空 null addr") end
+
+  -- Orphaned-patch guard: if already starts with E9 (a leftover jmp from a CT
+  -- reload that lost _territoryHook), capturing it as "original" would be wrong.
+  -- Refuse rather than corrupt the restore bytes.
+  if readBytes(target, 1, false) == 0xE9 then
+    error("领地上限已被patch（上次未正常关闭）— 请重启游戏后再启用 / restart game first")
+  end
+
+  local orig = readBytes(target, 14, true)
+  local cave = allocateMemory(64, target) or allocateMemory(64)
+  writeFloat(cave + 16, limit * 1.0)        -- the constant float
+  writeBytes(cave, 0xF3, 0x0F, 0x10, 0x05)  -- movss xmm0, [rip+rel32]
+  writeInteger(cave + 4, 8)                 -- rel32 = (cave+16) - (cave+8)
+  writeBytes(cave + 8, 0xC3)                -- ret
+
+  local jmpRel = cave - (target + 5)
+  if jmpRel &lt; -0x80000000 or jmpRel &gt; 0x7FFFFFFF then
+    deAlloc(cave); error("Cave too far for E9 rel32 — ASLR placement issue")
+  end
+  if jmpRel &lt; 0 then jmpRel = 0x100000000 + jmpRel end
+  writeBytes(target, 0xE9)
+  writeBytes(target + 1, jmpRel % 256, math.floor(jmpRel/256) % 256,
+             math.floor(jmpRel/65536) % 256, math.floor(jmpRel/16777216) % 256)
+  writeBytes(target + 5, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90)
+
+  MT.cheats.sect._territoryHook = { target = target, orig = orig, cave = cave }
+  return string.format("领地上限 = %d", limit)
+end
+
+function MT.cheats.sect.territoryLimitDisable()
+  local h = MT.cheats.sect._territoryHook
+  if h then
+    for i, b in ipairs(h.orig) do writeBytes(h.target + i - 1, b) end
+    deAlloc(h.cave)
+    MT.cheats.sect._territoryHook = nil
+  end
+  return "已恢复 Restored"
 end
 
 -- Helper: get the player's ForceData
@@ -4960,9 +5126,10 @@ end
 
 function MT.cheats.sect.research100()
   local playerFD = MT.cheats.sect.getPlayerForceData()
-  local activeID = readInteger(playerFD + 0x128)
+  -- ForceData inserted forceFavorDict at 0xD8 in 2026-06-04 → fields after +8.
+  local activeID = readInteger(playerFD + 0x130)  -- nowResearchTech (was 0x128)
   if activeID &lt; 0 then error("当前无研究 [No active research]") end
-  local tld = readQword(playerFD + 0x130)
+  local tld = readQword(playerFD + 0x138)          -- techLvData (was 0x130)
   local tldItems = readQword(tld + 0x10)
   local tldCnt = readInteger(tld + 0x18)
   for i = 0, tldCnt - 1 do
@@ -5155,6 +5322,10 @@ function MT.cheats.city.getAreaGrid(area)
   if not tilesList or tilesList == 0 then return {width=w, height=h, tiles={}} end
   local items = readQword(tilesList + 0x10)
   local count = readInteger(tilesList + 0x18) or 0
+  -- Clamp: count comes straight from game memory. A wrong offset (after a game
+  -- update) or a transient garbage read could make this huge and freeze CE's
+  -- GUI thread in the per-tile read loop below. Real areas are well under 2000.
+  if count &lt; 0 or count &gt; 2000 then count = 0 end
   local tiles = {}
   for i = 0, count - 1 do
     local t = readQword(items + 0x20 + i * 8)
@@ -5199,21 +5370,31 @@ function MT.cheats.city.getAllBuildings()
   if not c.gdc then c:ensure("gdc", "GameDataController", 0x20) end
   local gdcInst = readQword(c.gdc.static + c.gdc.instOff)
   if not gdcInst or gdcInst == 0 then return {} end
-  local lst = readQword(gdcInst + 0xE0)  -- buildingDataBase
-  if not lst or lst == 0 then return {} end
-  local items = readQword(lst + 0x10)
-  local count = readInteger(lst + 0x18) or 0
+  -- buildingDataBase changed List -&gt; Dictionary&lt;int, AreaBuildingDataBase&gt; in the
+  -- 2026-06-04 update. Iterate the Dictionary's Entry[] and read each building's
+  -- own id/name (AreaBuildingDataBase also gained an `id` at 0x10, pushing name to
+  -- 0x18). Canonical Unity 2020.3 IL2CPP dict layout: entries@0x18, count@0x20,
+  -- Entry = {int hashCode; int next; int key; pad; ptr value} (0x18 bytes), value@0x10.
+  local dict = readQword(gdcInst + 0xE0)
+  if not dict or dict == 0 then return {} end
+  local entries = readQword(dict + 0x18)
+  local count = readInteger(dict + 0x20) or 0
+  if not entries or entries == 0 then return {} end
+  if count &lt; 0 or count &gt; 5000 then count = 0 end  -- clamp garbage/bad-offset reads
   local out = {}
+  local ENTRY_SIZE = 0x18
+  local base = entries + 0x20  -- Il2CppArray element data
   for i = 0, count - 1 do
-    local b = readQword(items + 0x20 + i * 8)
+    local b = readQword(base + i * ENTRY_SIZE + 0x10)  -- Entry.value (AreaBuildingDataBase*)
     if b and b ~= 0 then
-      local np = readQword(b + 0x10)
+      local id = readInteger(b + 0x10) or -1            -- AreaBuildingDataBase.id
+      local np = readQword(b + 0x18)                     -- AreaBuildingDataBase.name (System.String)
       local name = ""
       if np and np ~= 0 then
         local nl = readInteger(np + 0x10) or 0
         if nl &gt; 0 then name = readString(np + 0x14, math.min(nl, 50) * 2, true) or "" end
       end
-      table.insert(out, {id = i, name = name})
+      if id and id &gt;= 0 then table.insert(out, {id = id, name = name}) end
     end
   end
   return out
@@ -5350,6 +5531,7 @@ function MT.cheats.city.upgradeAllRoads(area, targetLv)
   if not tilesList or tilesList == 0 then return false, "tile list null", 0 end
   local items = readQword(tilesList + 0x10)
   local count = readInteger(tilesList + 0x18) or 0
+  if count &lt; 0 or count &gt; 2000 then count = 0 end  -- clamp garbage/bad-offset reads
   local upgraded = 0
   for i = 0, count - 1 do
     local t = readQword(items + 0x20 + i * 8)
@@ -5370,6 +5552,82 @@ function MT.cheats.city.upgradeAllRoads(area, targetLv)
   -- Mark area dirty so UI repaints
   pcall(function() writeBytes(area + 0xF0, 1) end)
   return true, string.format("%d roads → lv %d", upgraded, targetLv), upgraded
+end
+
+-- src/17_cheats_study.lua — Skill-study minigame score lock (MT.cheats.study)
+-- ============================================================
+-- The skill-learning minigame (读书 / ReadBook grid) keeps the player's
+-- current score at ReadBookController + 0x78 (float). ReadBookController + 0x60
+-- (byte) is the "minigame open" flag: PlayerStudySkill-style entry sets it to 1,
+-- SureFinishRead sets it back to 0. When enabled, a timer forces the score to a
+-- user-chosen value WHILE the minigame is open, so the player can finish (阅毕)
+-- with a desired score without playing the minigame. baseline score otherwise
+-- untouched. Verified live: writing +0x78 snaps the on-screen score, and a
+-- fresh study session re-applies it.
+-- ============================================================
+MT.cheats = MT.cheats or {}
+MT.cheats.study = {}
+
+-- (Re)set on every CT load. A stale score-lock timer from a previous session
+-- (whose Lua object survives a CT reload) will see this flag = false on its
+-- next fire and self-destruct via its captured upvalue — we never touch the
+-- old timer object here (accessing a stale timer's props can C-level AV).
+_mtStudyScoreOn = false
+_mtStudyScoreVal = _mtStudyScoreVal or 9999
+-- _mtStudyScoreTimer holds the live timer (tracked for explicit [DISABLE] kill)
+
+local RBC_SCORE_OFF = 0x78   -- float: current minigame score
+local RBC_OPEN_OFF  = 0x60   -- byte:  1 = minigame open, 0 = closed
+
+local function _rbcInstance()
+  local c = MT.il2cpp.init()
+  if not c then return nil end
+  local cls = c.findClass("ReadBookController")
+  if not cls then return nil end
+  local sf = readQword(cls + 0xB8)
+  if not sf or sf == 0 then return nil end
+  local inst = readQword(sf)
+  return (inst ~= 0) and inst or nil
+end
+
+-- enableFn for makeToggleInput — receives the entered value.
+function MT.cheats.study.scoreEnable(val)
+  _mtStudyScoreVal = tonumber(val) or 9999
+  _mtStudyScoreOn = true
+  if _mtStudyScoreTimer then
+    return "学习评分锁定 = " .. _mtStudyScoreVal  -- already running; value updated
+  end
+  local t = createTimer(getMainForm())
+  t.Interval = 250
+  t.OnTimer = function()
+    -- Self-terminate when disabled (covers CT reload, which resets the flag).
+    -- `t` is captured here, so we can safely destroy our own timer.
+    if not _mtStudyScoreOn then
+      pcall(function() t.Enabled = false; t.destroy() end)
+      if _mtStudyScoreTimer == t then _mtStudyScoreTimer = nil end
+      return
+    end
+    pcall(function()
+      local inst = _rbcInstance()
+      if not inst then return end                       -- not attached / no controller
+      if (readInteger(inst + RBC_OPEN_OFF) &amp; 0xFF) == 1 then  -- minigame open
+        writeFloat(inst + RBC_SCORE_OFF, _mtStudyScoreVal)
+      end
+    end)
+  end
+  t.Enabled = true
+  _mtStudyScoreTimer = t
+  return "学习评分锁定 = " .. _mtStudyScoreVal
+end
+
+-- disableFn for makeToggleInput.
+function MT.cheats.study.scoreDisable()
+  _mtStudyScoreOn = false
+  if _mtStudyScoreTimer then
+    pcall(function() _mtStudyScoreTimer.Enabled = false; _mtStudyScoreTimer.destroy() end)
+    _mtStudyScoreTimer = nil
+  end
+  return "已关闭 Disabled"
 end
 
 -- src/99_compat.lua — Backward-compatibility aliases and process watcher

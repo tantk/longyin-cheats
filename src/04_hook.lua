@@ -922,10 +922,11 @@ function MT.hook.discover(fastMode)
   S.OFF_MEDFOOD = 0x68  -- default (f7.6+/f8)
   S.OFF_HORSE = 0x88
   if S.gdc and S.gdc ~= 0 then
-    local hdb = readQword(S.gdc + 0x120) -- horseDataBase
+    local hdb = readQword(S.gdc + 0x120) -- horseDataBase: Dictionary<int,ItemData> (List pre-2026-06-04)
     if hdb and hdb ~= 0 then
-      local hitems = readQword(hdb + 0x10)
-      local ht = hitems and readQword(hitems + 0x20) -- first horse template
+      -- Dict layout: entries@0x18; first Entry's value (ItemData*) at entries+0x20+0x10
+      local entries = readQword(hdb + 0x18)
+      local ht = entries and readQword(entries + 0x20 + 0x10) -- first horse template
       if ht and ht ~= 0 then
         local at88 = readQword(ht + 0x88)
         local at80 = readQword(ht + 0x80)

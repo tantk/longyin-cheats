@@ -29,6 +29,171 @@ function MT.cheats.sect.getSectMembers()
   return members, playerForceID
 end
 
+-- Set the sect's martial-art manual storage weight limit (书库负重上限).
+-- ForceData.bookStorage (ItemListData) is at +0xB8; ItemListData.maxWeight is a
+-- float at +0x20. Default game cap is 240; raising it lets the sect store more
+-- manuals. One-shot write (re-apply if the game ever recomputes it).
+function MT.cheats.sect.setBookStorageLimit(val)
+  local v = tonumber(val) or 9999
+  if v < 0 then error("数值无效 Invalid amount") end
+  local fd = MT.cheats.sect.getPlayerForceData()
+  local bookStorage = readQword(fd + 0xB8)
+  if not bookStorage or bookStorage == 0 then error("书库未找到 Book storage not found") end
+  writeFloat(bookStorage + 0x20, v * 1.0)  -- maxWeight
+  return string.format("书库负重上限已设为 %.0f", v)
+end
+
+-- Sect per-resource storage caps (wood/food/ore/herb/silver). The game
+-- RECOMPUTES the caps every few days: GameController.CountForceData builds
+--   resourceStoreMax = [6 base float constants] × storageMultiplier
+-- and clamps current resources to it — so freezing the cap loses a race and
+-- DROPS resources. Instead we redirect the 3 distinct base-constant loads
+-- (movss xmm,[rip]) inside CountForceData to point at our own larger floats,
+-- so the recompute itself produces a huge cap and never clamps. Affects all
+-- forces (constants are global), which the user accepted. Toggle = restore.
+--
+-- Find logic (offsets shift each game build, so locate fresh each enable):
+--   1) resolve CountForceData + GlobalData.ListMulti addresses
+--   2) find the `call ListMulti` site inside CountForceData (E8 rel32)
+--   3) the base list is built just before it: scan back for the 3
+--      `movss xmm,[rip]` (F3 0F 10 0D / F3 0F 10 35) constant loads
+local function _findResBaseConstLoads()
+  local c = MT.il2cpp.init()
+  local gc = c.findClass("GameController"); if not gc then return nil, "GameController not found" end
+  local gd = c.findClass("GlobalData");     if not gd then return nil, "GlobalData not found" end
+  local gmfn = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+  local function MI(cls, name)
+    local nm = allocateMemory(64); writeString(nm, name)
+    local m = executeCodeEx(0, nil, gmfn, cls, nm, -1); deAlloc(nm)
+    return (m and m ~= 0) and m or nil
+  end
+  local cfd = MI(gc, "CountForceData"); if not cfd then return nil, "CountForceData not found" end
+  local lm  = MI(gd, "ListMulti");      if not lm  then return nil, "ListMulti not found" end
+  local fn = readQword(cfd); local lmAddr = readQword(lm)
+  if not fn or fn == 0 or not lmAddr or lmAddr == 0 then return nil, "addr resolve failed" end
+  -- find E8 call to ListMulti within the function
+  local callSite = nil
+  for off = 0, 0x3000 - 5 do
+    local a = fn + off
+    if readBytes(a, 1, false) == 0xE8 and (a + 5 + readInteger(a + 1)) == lmAddr then callSite = a; break end
+  end
+  if not callSite then return nil, "ListMulti call not located" end
+  -- scan back a tight window for movss xmm,[rip] (the 3 base-constant loads)
+  local found = {}
+  for a = callSite - 0x140, callSite - 8 do
+    if readBytes(a,1,false)==0xF3 and readBytes(a+1,1,false)==0x0F and readBytes(a+2,1,false)==0x10 then
+      local modrm = readBytes(a+3,1,false)
+      if modrm == 0x0D or modrm == 0x35 then          -- movss xmm1/xmm6, [rip+disp32]
+        local instrEnd = a + 8
+        found[#found+1] = { dispAddr = a + 4, instrEnd = instrEnd, target = instrEnd + readInteger(a + 4) }
+      end
+    end
+  end
+  return found
+end
+
+function MT.cheats.sect.resourceLimitEnable(scale)
+  MT.game.checkAlive()
+  local s = tonumber(scale) or 40
+  if s < 1 then s = 1 end
+  if MT.cheats.sect._resHook then MT.cheats.sect.resourceLimitDisable() end
+  local found, err = _findResBaseConstLoads()
+  if not found then error("资源基数定位失败 " .. tostring(err)) end
+  if #found ~= 3 then error(string.format("资源基数指令数异常 (found %d, expected 3) — 游戏可能已更新", #found)) end
+  -- one RW float per base, near the first instruction so the rel32 disp reaches
+  local buf = allocateMemory(64, found[1].instrEnd)
+  if not buf or buf == 0 then error("内存分配失败 alloc failed") end
+  -- Validate the redirect disp fits in a signed rel32 for ALL 3 instructions.
+  -- Under high ASLR the nearby alloc can land >2GB away; writing a truncated
+  -- disp would point the movss at a wrong/unmapped address (garbage caps/crash).
+  for i, m in ipairs(found) do
+    local disp = (buf + (i - 1) * 4) - m.instrEnd
+    if disp < -0x80000000 or disp > 0x7FFFFFFF then
+      deAlloc(buf)
+      error("内存分配过远 buf too far for rel32 — retry / restart game")
+    end
+  end
+  local saved = {}
+  for i, m in ipairs(found) do
+    local orig = readFloat(m.target) or 250.0
+    writeFloat(buf + (i - 1) * 4, orig * s)            -- scaled base (preserves per-resource ratio)
+    saved[i] = { dispAddr = m.dispAddr, orig = readInteger(m.dispAddr) }
+    writeInteger(m.dispAddr, (buf + (i - 1) * 4) - m.instrEnd)
+  end
+  MT.cheats.sect._resHook = { buf = buf, saved = saved }
+  return string.format("资源上限 ×%d (recompute will raise caps)", s)
+end
+
+function MT.cheats.sect.resourceLimitDisable()
+  local h = MT.cheats.sect._resHook
+  if h then
+    for _, sv in ipairs(h.saved) do pcall(function() writeInteger(sv.dispAddr, sv.orig) end) end
+    if h.buf then pcall(function() deAlloc(h.buf) end) end
+    MT.cheats.sect._resHook = nil
+  end
+  return "已恢复 Restored"
+end
+
+-- Territory limit (领地上限): ForceData.GetMaxAreaNum() returns a computed float
+-- (forceSpeAddData.Get(0)) — the "5/20" cap. Hook its body to return a constant,
+-- exactly like memberLimit hooks GetMaxHeroNum: movss xmm0,[const]; ret via a
+-- nearby code cave reached with an E9 jmp. Toggle (enable/disable restores).
+function MT.cheats.sect.territoryLimitEnable(newLimit)
+  MT.game.checkAlive()
+  local limit = tonumber(newLimit) or 99
+  if limit < 1 then limit = 1 end
+  -- Re-entry guard: restore first if already hooked (else we'd capture the
+  -- patched bytes as "original" and never be able to restore).
+  if MT.cheats.sect._territoryHook then MT.cheats.sect.territoryLimitDisable() end
+  local c = MT.il2cpp.init()
+  local fdClass = c.findClass("ForceData")
+  if not fdClass then error("ForceData类未找到 ForceData class not found") end
+  local gmfn = getAddress("GameAssembly.il2cpp_class_get_method_from_name")
+  local nm = allocateMemory(64); writeString(nm, "GetMaxAreaNum")
+  local mi = executeCodeEx(0, nil, gmfn, fdClass, nm, 0)
+  deAlloc(nm)
+  if not mi or mi == 0 then error("GetMaxAreaNum未找到 not found") end
+  local target = readQword(mi)
+  if not target or target == 0 then error("GetMaxAreaNum地址为空 null addr") end
+
+  -- Orphaned-patch guard: if already starts with E9 (a leftover jmp from a CT
+  -- reload that lost _territoryHook), capturing it as "original" would be wrong.
+  -- Refuse rather than corrupt the restore bytes.
+  if readBytes(target, 1, false) == 0xE9 then
+    error("领地上限已被patch（上次未正常关闭）— 请重启游戏后再启用 / restart game first")
+  end
+
+  local orig = readBytes(target, 14, true)
+  local cave = allocateMemory(64, target) or allocateMemory(64)
+  writeFloat(cave + 16, limit * 1.0)        -- the constant float
+  writeBytes(cave, 0xF3, 0x0F, 0x10, 0x05)  -- movss xmm0, [rip+rel32]
+  writeInteger(cave + 4, 8)                 -- rel32 = (cave+16) - (cave+8)
+  writeBytes(cave + 8, 0xC3)                -- ret
+
+  local jmpRel = cave - (target + 5)
+  if jmpRel < -0x80000000 or jmpRel > 0x7FFFFFFF then
+    deAlloc(cave); error("Cave too far for E9 rel32 — ASLR placement issue")
+  end
+  if jmpRel < 0 then jmpRel = 0x100000000 + jmpRel end
+  writeBytes(target, 0xE9)
+  writeBytes(target + 1, jmpRel % 256, math.floor(jmpRel/256) % 256,
+             math.floor(jmpRel/65536) % 256, math.floor(jmpRel/16777216) % 256)
+  writeBytes(target + 5, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90)
+
+  MT.cheats.sect._territoryHook = { target = target, orig = orig, cave = cave }
+  return string.format("领地上限 = %d", limit)
+end
+
+function MT.cheats.sect.territoryLimitDisable()
+  local h = MT.cheats.sect._territoryHook
+  if h then
+    for i, b in ipairs(h.orig) do writeBytes(h.target + i - 1, b) end
+    deAlloc(h.cave)
+    MT.cheats.sect._territoryHook = nil
+  end
+  return "已恢复 Restored"
+end
+
 -- Helper: get the player's ForceData
 function MT.cheats.sect.getPlayerForceData()
   MT.game.checkAlive()
@@ -313,9 +478,10 @@ end
 
 function MT.cheats.sect.research100()
   local playerFD = MT.cheats.sect.getPlayerForceData()
-  local activeID = readInteger(playerFD + 0x128)
+  -- ForceData inserted forceFavorDict at 0xD8 in 2026-06-04 → fields after +8.
+  local activeID = readInteger(playerFD + 0x130)  -- nowResearchTech (was 0x128)
   if activeID < 0 then error("当前无研究 [No active research]") end
-  local tld = readQword(playerFD + 0x130)
+  local tld = readQword(playerFD + 0x138)          -- techLvData (was 0x130)
   local tldItems = readQword(tld + 0x10)
   local tldCnt = readInteger(tld + 0x18)
   for i = 0, tldCnt - 1 do

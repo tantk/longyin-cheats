@@ -52,7 +52,7 @@ function MT.cheats.resources.setMeteorite(val)
   if not wd then error("世界数据为空 WorldData null") end
   local v = tonumber(val) or 999
   if v < 0 then error("数值无效 Invalid amount") end
-  writeInteger(wd + 0x228, math.floor(v))
+  writeInteger(wd + 0x230, math.floor(v))  -- speEnhanceStone (was 0x228 pre-2026-06-04; WorldData +8 shift)
   return string.format("陨铁已设置为 %d", v)
 end
 

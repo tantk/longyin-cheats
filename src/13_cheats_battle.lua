@@ -13,7 +13,7 @@ function MT.cheats.battle.battleSpeedEnable(multi)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then speedTimer.Enabled = false; return end
     local ok, wd = pcall(MT.game.getWorldData)
-    if ok and wd then pcall(writeFloat, wd + 0x1D0, speedVal) end
+    if ok and wd then pcall(writeFloat, wd + 0x1D8, speedVal) end  -- battleTimeScale (was 0x1D0; WorldData +8 shift)
   end
   speedTimer.Enabled = true
   MT.cheats.battle._speedState = {timer = speedTimer, val = speedVal}
@@ -24,7 +24,7 @@ function MT.cheats.battle.battleSpeedDisable()
   if s and s.timer then s.timer.destroy() end
   MT.cheats.battle._speedState = nil
   local ok, wd = pcall(MT.game.getWorldData)
-  if ok and wd then writeFloat(wd + 0x1D0, 1.0) end
+  if ok and wd then writeFloat(wd + 0x1D8, 1.0) end  -- battleTimeScale (was 0x1D0; WorldData +8 shift)
 end
 
 function MT.cheats.battle.enemyOneHP()
