@@ -249,6 +249,11 @@ do
   y1 = y1 + ROW_H
 
   MT.ui.makeInput(tabGeneral, COL1_X, y1, BTN_W, BTN_H, "设置陨铁 Meteorite", 80, "999", MT.cheats.resources.setMeteorite, false)
+  y1 = y1 + ROW_H
+
+  -- Personal house-storage cap (FREEZE toggle — recomputes, so re-apply; <99999)
+  MT.ui.makeToggleInput(tabGeneral, COL1_X, y1, BTN_W, BTN_H, "仓库上限 SelfStorage", 80, "99000",
+    MT.cheats.resources.selfStorageLimitEnable, MT.cheats.resources.selfStorageLimitDisable, false)
   y1 = y1 + ROW_H + SECTION_GAP
 
   sectionLabel(tabGeneral, COL1_X, y1, "属性/天赋 Stats/Talents")
@@ -2328,6 +2333,7 @@ pcall(function()
   pcall(MT.cheats.sect.territoryLimitDisable) -- restore GetMaxAreaNum code patch
   pcall(MT.cheats.sect.resourceLimitDisable)  -- kill the resource-cap freeze timer
   pcall(MT.cheats.study.scoreDisable)         -- kill the study-score lock timer
+  pcall(MT.cheats.resources.selfStorageLimitDisable) -- stop house-storage freeze
   -- Sect talent slots now delegates to stats.talentSlotEnable, so talentSlotDisable handles both
 
   -- Affix preset is per-session: clear the toggle so it can't apply silently

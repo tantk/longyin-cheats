@@ -4073,6 +4073,62 @@ function MT.cheats.resources.setMoney(val)
   return string.format("银两已设置为 %d", tonumber(val) or 9999)
 end
 
+-- Personal house-storage weight cap (个人仓库上限, HeroData.selfStorage @0x228).
+-- ItemListData.maxWeight is a float at +0x20. The game RECOMPUTES it back to the
+-- default (1120) on house events, so a one-shot reverts. This is a FREEZE toggle:
+-- a dedicated timer re-applies the value every ~200ms so it holds. Storage doesn't
+-- delete over-cap items (just blocks adding), so the freeze is safe. NB: the game
+-- REJECTS maxWeight &gt;= 99999, so values are clamped to 99998 (use ~99000 to be safe).
+-- (The character carry-weight cap, HeroData.itemListData @0x220, was removed: its
+--  UI/enforcement doesn't hold cleanly with a freeze — pending investigation.)
+_mtSelfStoreOn = false
+_mtSelfStoreVal = _mtSelfStoreVal or 99000
+-- _mtSelfStoreTimer holds the freeze timer
+
+local function _clampWeight(v)
+  v = tonumber(v) or 99000
+  if v &lt; 0 then v = 0 end
+  if v &gt;= 99999 then v = 99998 end  -- game rejects &gt;= 99999
+  return v
+end
+
+function MT.cheats.resources.selfStorageLimitEnable(val)
+  _mtSelfStoreVal = _clampWeight(val)
+  _mtSelfStoreOn = true
+  if _mtSelfStoreTimer then
+    return string.format("仓库上限锁定 = %.0f", _mtSelfStoreVal)
+  end
+  local t = createTimer(getMainForm())
+  t.Interval = 200
+  t.OnTimer = function()
+    -- self-terminate when off (covers CT reload, which resets the flag); `t`
+    -- captured so we destroy our own timer.
+    if not _mtSelfStoreOn then
+      pcall(function() t.Enabled = false; t.destroy() end)
+      if _mtSelfStoreTimer == t then _mtSelfStoreTimer = nil end
+      return
+    end
+    pcall(function()
+      local hero = MT.game.getHero()
+      if not hero then return end
+      local s = readQword(hero + 0x228)
+      if s and s ~= 0 then writeFloat(s + 0x20, _mtSelfStoreVal) end
+    end)
+  end
+  t.Enabled = true
+  _mtSelfStoreTimer = t
+  return string.format("仓库上限锁定 = %.0f", _mtSelfStoreVal)
+end
+
+function MT.cheats.resources.selfStorageLimitDisable()
+  _mtSelfStoreOn = false
+  if _mtSelfStoreTimer then
+    pcall(function() _mtSelfStoreTimer.Enabled = false; _mtSelfStoreTimer.destroy() end)
+    _mtSelfStoreTimer = nil
+  end
+  return "已关闭 Disabled"
+end
+
 function MT.cheats.resources.setSectCurrency(val)
   local hero = MT.game.getHero()
   if not hero then error("角色未找到 Hero not found") end
